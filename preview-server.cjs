@@ -17,6 +17,8 @@ const installJs="(()=>{let promptEvent=null;const standalone=()=>matchMedia('(di
 const withPwa=source=>source.replace(/<title>/i,pwaHead+'<title>');
 const publicAssets={'/app.webmanifest':['application/manifest+json; charset=utf-8',manifest],'/app-icon-192.png':['image/png',icon192],'/app-icon-512.svg':['image/svg+xml',icon512],'/app-sw.js':['application/javascript; charset=utf-8',worker],'/install.js':['application/javascript; charset=utf-8',installJs]};
 
+const expiryHtml=source=>{const changes=[["pages.push(['estoque','Estoque']);","pages.push(['estoque','Estoque'],['validade','Validades']);"],["if(page==='historico')h+=historyPanel(a);","if(page==='historico')h+=historyPanel(a);if(page==='validade')h+=primeExpiryPanel(a);"],["loginScreen();</script></html>",'loginScreen();</script><script src="/validade.js"></script></html>']];for(const [a,b] of changes){if(!source.includes(a))throw Error('Preview validity integration mismatch');source=source.replace(a,b)}return source};
+const enhancedHtml=expiryHtml(html);
 const hash=v=>crypto.createHash('sha256').update(v).digest();
 const expected=hash(password);
 const key=crypto.randomBytes(32);
@@ -34,6 +36,7 @@ res.setHeader('X-Frame-Options','DENY');
 res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline'; img-src data: blob: 'self'; font-src data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
 const path=req.url.split('?')[0];
 if((req.method==='GET'||req.method==='HEAD')&&Object.hasOwn(publicAssets,path)){const [type,data]=publicAssets[path];res.writeHead(200,{'Content-Type':type});return res.end(req.method==='HEAD'?undefined:data)}
+if((req.method==='GET'||req.method==='HEAD')&&path==='/validade.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:require('node:fs').readFileSync(require('node:path').join(__dirname,'validade.js')))}
 if(path==='/healthz'){res.writeHead(200,{'Content-Type':'text/plain'});return res.end('ok')}
 if(req.method==='POST'&&path==='/entrar'){
   const ip=(req.headers['x-forwarded-for']||req.socket.remoteAddress||'unknown').split(',')[0].trim();
@@ -55,5 +58,5 @@ if(path!=='/'&&path!=='/index.html'){res.writeHead(404);return res.end('Not foun
 const cookie=(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.startsWith('__Host-prime_preview='));
 let valid=false;if(cookie){const val=cookie.slice('__Host-prime_preview='.length).split('.');if(val.length===3&&Number(val[0])>Date.now()&&safe(val[2],sign(val[0]+'.'+val[1])))valid=true}
 if(!valid)return send(res,200,withPwa(page()));
-return send(res,200,withPwa(html));
+return send(res,200,withPwa(enhancedHtml));
 }).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>console.log('Protected preview ready.'));
