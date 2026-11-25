@@ -3,8 +3,8 @@
 const imp=window.PRIME_COMMERCIAL_IMPORT||{month:'',rows:[]};
 const m=imp.month,byStore=new Map(imp.rows.map(([id,meta,actual])=>[id,{meta,actual}]));
 if(m)db.metasComerciais[m]=Object.fromEntries(imp.rows.map(([id,meta])=>[id,meta]));
-// O trimestre corresponde ao mês selecionado, nunca ao trimestre anterior.
-prevQuarter=function(month){const [y,n]=month.split('-').map(Number),start=Math.floor((n-1)/3)*3;return [0,1,2].map(i=>new Date(Date.UTC(y,start+i,1)).toISOString().slice(0,7))};
+// Trimestre móvel: mês selecionado e os dois meses anteriores.
+prevQuarter=function(month){const [y,n]=month.split('-').map(Number);return [-2,-1,0].map(i=>new Date(Date.UTC(y,n-1+i,1)).toISOString().slice(0,7))};
 const baseMetrics=commercialMetrics;
 const actualFor=(id,month)=>{if(db.mesesVendas.includes(month))return db.vendas.filter(r=>r.mes===month&&r.loja===id).reduce((s,r)=>s+r.centavos,0);return month===m?byStore.get(id)?.actual??null:null};
 commercialMetrics=function(a,month){const v=baseMetrics(a,month);if(!db.mesesVendas.includes(month)&&month===m){const vals=a.map(l=>actualFor(l.id,month));v.month=vals.every(x=>x!==null)?vals.reduce((s,n)=>s+n,0):null;v.mix=null;}if(v.q.includes(m)&&!db.mesesVendas.includes(m)){const vals=a.map(l=>actualFor(l.id,m));if(vals.every(x=>x!==null)){v.quarter=(v.quarter??0)+vals.reduce((s,n)=>s+n,0);v.coverage++;}}return v};
