@@ -28,7 +28,7 @@ if(commercialImport&&(!/^\d{4}-\d{2}$/.test(commercialImport.month)||!Array.isAr
 const commercialPayload=JSON.stringify(commercialImport).replace(/</g,'\\u003c');
 const commercialTag='<script>window.PRIME_COMMERCIAL_IMPORT='+commercialPayload+';</script><script src="/commercial-summary.js"></script>';
 const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(commercialJs).update(commercialPayload).update(html).digest('hex').slice(0,24);
-const enhancedHtml=expiryHtml(html).replace('<script src="/validade.js"></script>',commercialTag+'<script src="/validade.js"></script>').replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</body>','</body>').replace('</html>','<script src="/session-update.js"></script></html>');
+const enhancedHtml=expiryHtml(html).replace('</head>','<style>.goal-progress{background:#344155!important}.goal-progress>div,.goal-progress.complete>div{background:linear-gradient(90deg,#7ED957 0%,#8EEA6B 100%)!important}</style></head>').replace('<script src="/validade.js"></script>',commercialTag+'<script src="/validade.js"></script>').replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</body>','</body>').replace('</html>','<script src="/session-update.js"></script></html>');
 const hash=v=>crypto.createHash('sha256').update(v).digest();
 const expected=hash(password);
 const key=crypto.scryptSync(password,'prime-preview-session-v1',32);
