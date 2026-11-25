@@ -13,7 +13,7 @@ header{padding:14px 24px;gap:16px;align-items:center}header strong{font-size:18p
 .prime-shell nav button[data-prime-nav]:hover{background:#263950;filter:none}
 .prime-shell nav button[data-prime-nav].active{background:#88252e;border-color:#ce454d;color:#fff;font-weight:700;box-shadow:inset 3px 0 #ff7777}
 .prime-nav-icon{width:19px;height:19px;flex:none;display:inline-flex;align-items:center;justify-content:center}.prime-nav-icon svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
-.prime-nav-more,.prime-menu-overlay-title{display:none}
+.prime-shell nav button.prime-nav-more,.prime-menu-overlay-title{display:none}
 body.prime-collapsed{--prime-side:70px}body.prime-collapsed .prime-nav-text,body.prime-collapsed .prime-nav-label,body.prime-collapsed .prime-nav-head>span{display:none}body.prime-collapsed .prime-nav-head{justify-content:center;padding:0}body.prime-collapsed .prime-shell nav button[data-prime-nav]{justify-content:center;padding:11px 7px}
 body.login-mode .prime-shell{display:block;min-height:0}body.login-mode .prime-shell>nav{display:none}body.login-mode .prime-shell>main{max-width:720px}
 main h1{font-size:clamp(21px,2vw,27px);letter-spacing:-.035em;margin:0 0 18px}main h2{font-size:18px;letter-spacing:-.02em;margin:0 0 12px}main section{border-radius:13px;padding:18px;box-shadow:0 5px 18px #0002}main section p{line-height:1.5}
