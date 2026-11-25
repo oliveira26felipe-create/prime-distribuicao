@@ -18,14 +18,17 @@ const withPwa=source=>source.replace(/<title>/i,pwaHead+'<title>');
 const publicAssets={'/app.webmanifest':['application/manifest+json; charset=utf-8',manifest],'/app-icon-192.png':['image/png',icon192],'/app-icon-512.svg':['image/svg+xml',icon512],'/app-sw.js':['application/javascript; charset=utf-8',worker],'/install.js':['application/javascript; charset=utf-8',installJs]};
 
 const expiryHtml=source=>{const changes=[["pages.push(['estoque','Estoque']);","pages.push(['estoque','Estoque'],['validade','Validades']);"],["if(page==='historico')h+=historyPanel(a);","if(page==='historico')h+=historyPanel(a);if(page==='validade')h+=primeExpiryPanel(a);"],["loginScreen();</script></html>",'loginScreen();</script><script src="/validade.js"></script></html>']];for(const [a,b] of changes){if(!source.includes(a))throw Error('Preview validity integration mismatch');source=source.replace(a,b)}return source};
-const enhancedHtml=expiryHtml(html);
+const fs=require('node:fs'),pathUtil=require('node:path');
+const updateJs=fs.readFileSync(pathUtil.join(__dirname,'session-update.js'),'utf8');
+const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(html).digest('hex').slice(0,24);
+const enhancedHtml=expiryHtml(html).replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</body>','</body>').replace('</html>','<script src="/session-update.js"></script></html>');
 const hash=v=>crypto.createHash('sha256').update(v).digest();
 const expected=hash(password);
-const key=crypto.randomBytes(32);
+const key=crypto.scryptSync(password,'prime-preview-session-v1',32);
 const sign=v=>crypto.createHmac('sha256',key).update(v).digest('hex');
 const safe=(a,b)=>typeof a==='string'&&typeof b==='string'&&crypto.timingSafeEqual(hash(a),hash(b));
 const attempts=new Map();
-const page=(error='')=>`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Prime Distribuição | Prévia restrita</title><style>*{box-sizing:border-box}body{margin:0;background:#0d1522;color:#e8edf5;min-height:100vh;display:grid;place-items:center;padding:20px;font:16px Arial,sans-serif}main{width:100%;max-width:410px;background:#172438;padding:30px;border:1px solid #34455d;border-radius:18px}h1{margin:0 0 4px;font-size:30px;font-style:italic}small{color:#ff7175;letter-spacing:3px}p{line-height:1.5;color:#c4cede}label{display:block;margin:16px 0 6px}input,button{display:block;width:100%;padding:14px;border-radius:9px;font:inherit}input{color:#fff;background:#101a2a;border:1px solid #64748b}button{margin-top:20px;border:none;background:#d92c35;color:#fff;font-weight:bold}aside{color:#ffb5b5;margin:10px 0}</style></head><body><main><h1>PRIME</h1><small>DISTRIBUIÇÃO</small><p>Prévia original 7.7 — acesso restrito</p>${error?'<aside>'+error+'</aside>':''}<form method="post" action="/entrar"><label for="user">Usuário</label><input id="user" name="user" value="prime" autocomplete="username" required><label for="password">Senha da prévia</label><input id="password" name="password" type="password" autocomplete="current-password" required><button>Entrar na plataforma</button></form><p>Ambiente de demonstração. Os registros não são sincronizados.</p></main></body></html>`;
+const page=(error='')=>`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Prime Distribuição | Prévia restrita</title><style>*{box-sizing:border-box}body{margin:0;background:#0d1522;color:#e8edf5;min-height:100vh;display:grid;place-items:center;padding:20px;font:16px Arial,sans-serif}main{width:100%;max-width:410px;background:#172438;padding:30px;border:1px solid #34455d;border-radius:18px}h1{margin:0 0 4px;font-size:30px;font-style:italic}small{color:#ff7175;letter-spacing:3px}p{line-height:1.5;color:#c4cede}label{display:block;margin:16px 0 6px}input,button{display:block;width:100%;padding:14px;border-radius:9px;font:inherit}input{color:#fff;background:#101a2a;border:1px solid #64748b}button{margin-top:20px;border:none;background:#d92c35;color:#fff;font-weight:bold}aside{color:#ffb5b5;margin:10px 0}</style></head><body><main><h1>PRIME</h1><small>DISTRIBUIÇÃO</small><p>Prime Distribuição — acesso restrito</p>${error?'<aside>'+error+'</aside>':''}<form method="post" action="/entrar"><label for="user">Usuário</label><input id="user" name="user" value="prime" autocomplete="username" required><label for="password">Senha da prévia</label><input id="password" name="password" type="password" autocomplete="current-password" required><button>Entrar na plataforma</button><p style="font-size:13px">Sessão mantida por 30 dias neste navegador. Encerre a sessão em dispositivos compartilhados.</p></form><p>Ambiente de demonstração. Os registros não são sincronizados.</p></main></body></html>`;
 const send=(res,status,body)=>{res.writeHead(status,{'Content-Type':'text/html; charset=utf-8'});res.end(body)};
 http.createServer(async(req,res)=>{
 res.setHeader('Cache-Control','no-store, private, max-age=0');
@@ -37,6 +40,8 @@ res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-
 const path=req.url.split('?')[0];
 if((req.method==='GET'||req.method==='HEAD')&&Object.hasOwn(publicAssets,path)){const [type,data]=publicAssets[path];res.writeHead(200,{'Content-Type':type});return res.end(req.method==='HEAD'?undefined:data)}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/validade.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:require('node:fs').readFileSync(require('node:path').join(__dirname,'validade.js')))}
+if((req.method==='GET'||req.method==='HEAD')&&path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:release}))}
+if((req.method==='GET'||req.method==='HEAD')&&path==='/session-update.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:updateJs)}
 if(path==='/healthz'){res.writeHead(200,{'Content-Type':'text/plain'});return res.end('ok')}
 if(req.method==='POST'&&path==='/entrar'){
   const ip=(req.headers['x-forwarded-for']||req.socket.remoteAddress||'unknown').split(',')[0].trim();
@@ -49,8 +54,8 @@ if(req.method==='POST'&&path==='/entrar'){
   const f=new URLSearchParams(body);
   if(f.get('user')!=='prime'||!crypto.timingSafeEqual(hash(f.get('password')||''),expected)){a.count++;attempts.set(ip,a);return send(res,401,page('Usuário ou senha incorretos.'))}
   attempts.delete(ip);
-  const token=String(now+8*60*60*1000)+'.'+crypto.randomBytes(16).toString('hex');
-  res.writeHead(303,{'Location':'/','Set-Cookie':'__Host-prime_preview='+token+'.'+sign(token)+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=28800'});return res.end();
+  const token=String(now+30*24*60*60*1000)+'.'+crypto.randomBytes(16).toString('hex');
+  res.writeHead(303,{'Location':'/','Set-Cookie':'__Host-prime_preview='+token+'.'+sign(token)+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=2592000'});return res.end();
 }
 if(req.method!=='GET'&&req.method!=='HEAD'){res.writeHead(405);return res.end()}
 if(path==='/sair-previa'){res.writeHead(303,{'Location':'/','Set-Cookie':'__Host-prime_preview=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'});return res.end()}
