@@ -27,8 +27,10 @@ const commercialImport=JSON.parse(process.env.COMMERCIAL_SUMMARY_JSON||'null');
 if(commercialImport&&(!/^\d{4}-\d{2}$/.test(commercialImport.month)||!Array.isArray(commercialImport.rows)||commercialImport.rows.length!==36||new Set(commercialImport.rows.map(r=>r[0])).size!==36||commercialImport.rows.some(r=>!/^\d+$/.test(r[0])||!Number.isSafeInteger(r[1])||!Number.isSafeInteger(r[2])||r[1]<0)))throw Error('Invalid commercial import');
 const commercialPayload=JSON.stringify(commercialImport).replace(/</g,'\\u003c');
 const commercialTag='<script>window.PRIME_COMMERCIAL_IMPORT='+commercialPayload+';</script><script src="/commercial-summary.js"></script>';
-const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(commercialJs).update(commercialPayload).update(html).digest('hex').slice(0,24);
-const enhancedHtml=expiryHtml(html).replace('</style>',".goal-progress{background:#344155!important}.goal-progress>div,.goal-progress.complete>div{background:linear-gradient(90deg,#7ED957 0%,#8EEA6B 100%)!important}</style>").replace('<script src="/validade.js"></script>',commercialTag+'<script src="/validade.js"></script>').replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</body>','</body>').replace('</html>','<script src="/session-update.js"></script></html>');
+const polishJs=fs.readFileSync(pathUtil.join(__dirname,'prime-polish.js'),'utf8');
+const polishCss=fs.readFileSync(pathUtil.join(__dirname,'prime-polish.css'),'utf8');
+const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(polishJs).update(polishCss).update(commercialJs).update(commercialPayload).update(html).digest('hex').slice(0,24);
+const enhancedHtml=expiryHtml(html).replace('</style>',".goal-progress{background:#344155!important}.goal-progress>div,.goal-progress.complete>div{background:linear-gradient(90deg,#7ED957 0%,#8EEA6B 100%)!important}</style>").replace('<script src="/validade.js"></script>',commercialTag+'<script src="/validade.js"></script>').replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</style>',polishCss+'</style>').replace('</html>','<script src="/prime-polish.js"></script><script src="/session-update.js"></script></html>');
 const hash=v=>crypto.createHash('sha256').update(v).digest();
 const expected=hash(password);
 const key=crypto.scryptSync(password,'prime-preview-session-v1',32);
@@ -50,6 +52,7 @@ if((req.method==='GET'||req.method==='HEAD')&&path==='/validade.js'){res.writeHe
 if((req.method==='GET'||req.method==='HEAD')&&path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:release}))}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/session-update.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:updateJs)}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/commercial-summary.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:commercialJs)}
+if((req.method==='GET'||req.method==='HEAD')&&path==='/prime-polish.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:polishJs)}
 if(path==='/healthz'){res.writeHead(200,{'Content-Type':'text/plain'});return res.end('ok')}
 if(req.method==='POST'&&path==='/entrar'){
   const ip=(req.headers['x-forwarded-for']||req.socket.remoteAddress||'unknown').split(',')[0].trim();
