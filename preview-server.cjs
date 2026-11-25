@@ -22,8 +22,13 @@ const publicAssets={'/app.webmanifest':['application/manifest+json; charset=utf-
 const expiryHtml=source=>{const changes=[["pages.push(['estoque','Estoque']);","pages.push(['estoque','Estoque'],['validade','Validades']);"],["if(page==='historico')h+=historyPanel(a);","if(page==='historico')h+=historyPanel(a);if(page==='validade')h+=primeExpiryPanel(a);"],["loginScreen();</script></html>",'loginScreen();</script><script src="/validade.js"></script></html>']];for(const [a,b] of changes){if(!source.includes(a))throw Error('Preview validity integration mismatch');source=source.replace(a,b)}return source};
 const fs=require('node:fs'),pathUtil=require('node:path');
 const updateJs=fs.readFileSync(pathUtil.join(__dirname,'session-update.js'),'utf8');
-const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(html).digest('hex').slice(0,24);
-const enhancedHtml=expiryHtml(html).replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</body>','</body>').replace('</html>','<script src="/session-update.js"></script></html>');
+const commercialJs=fs.readFileSync(pathUtil.join(__dirname,'commercial-summary.js'),'utf8');
+const commercialImport=JSON.parse(process.env.COMMERCIAL_SUMMARY_JSON||'null');
+if(commercialImport&&(!/^\d{4}-\d{2}$/.test(commercialImport.month)||!Array.isArray(commercialImport.rows)||commercialImport.rows.length!==36||new Set(commercialImport.rows.map(r=>r[0])).size!==36||commercialImport.rows.some(r=>!/^\d+$/.test(r[0])||!Number.isSafeInteger(r[1])||!Number.isSafeInteger(r[2])||r[1]<0)))throw Error('Invalid commercial import');
+const commercialPayload=JSON.stringify(commercialImport).replace(/</g,'\\u003c');
+const commercialTag='<script>window.PRIME_COMMERCIAL_IMPORT='+commercialPayload+';</script><script src="/commercial-summary.js"></script>';
+const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(commercialJs).update(commercialPayload).update(html).digest('hex').slice(0,24);
+const enhancedHtml=expiryHtml(html).replace('<script src="/validade.js"></script>',commercialTag+'<script src="/validade.js"></script>').replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</body>','</body>').replace('</html>','<script src="/session-update.js"></script></html>');
 const hash=v=>crypto.createHash('sha256').update(v).digest();
 const expected=hash(password);
 const key=crypto.scryptSync(password,'prime-preview-session-v1',32);
@@ -44,6 +49,7 @@ if((req.method==='GET'||req.method==='HEAD')&&Object.hasOwn(publicAssets,path)){
 if((req.method==='GET'||req.method==='HEAD')&&path==='/validade.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:require('node:fs').readFileSync(require('node:path').join(__dirname,'validade.js')))}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:release}))}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/session-update.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:updateJs)}
+if((req.method==='GET'||req.method==='HEAD')&&path==='/commercial-summary.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:commercialJs)}
 if(path==='/healthz'){res.writeHead(200,{'Content-Type':'text/plain'});return res.end('ok')}
 if(req.method==='POST'&&path==='/entrar'){
   const ip=(req.headers['x-forwarded-for']||req.socket.remoteAddress||'unknown').split(',')[0].trim();
