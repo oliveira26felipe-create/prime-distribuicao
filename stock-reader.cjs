@@ -11,7 +11,7 @@ function parsePosition(values,catalog){
   else if(typeof stamp==='string'&&/^\d{1,2}\/\d{1,2}\/\d{4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(stamp.trim())){const [d,m,y,...time]=stamp.trim().split(/[\/\s]/);position=y+'-'+m.padStart(2,'0')+'-'+d.padStart(2,'0')+(time.length?'T'+time[0].padStart(8,'0').replace(/^0(\d{2}:)/,'$1'):'');}
   else throw Error('INVALID_STOCK_DATE');
   // The report's merged header is offset from the detail lines: B code, C description, D unit, E units, H master boxes.
-  const found=new Map();let total=null,mismatch=0;
+  const found=new Map();let total=null,mismatch=0,precision=[];
   for(const r of values){
     if(norm(r[2])==='itens listados'&&norm(r[3]).includes('total geral')){total=Number(r[1]);continue}
     if(norm(r[3])!=='unidade'||!/^\d+$/.test(String(r[1]??'').trim()))continue;
@@ -19,13 +19,13 @@ function parsePosition(values,catalog){
     if(found.has(id))throw Error('DUPLICATE_STOCK_PRODUCT');
     if(typeof units!=='number'||typeof boxes!=='number'||!Number.isFinite(units)||!Number.isFinite(boxes))throw Error('INVALID_STOCK_QUANTITY');
     const size=catalog.get(id);
-    const compatible=Number.isFinite(size)&&size>0&&Math.abs(units-boxes*size)<0.02;
-    if(size&&!compatible)mismatch++;
-    found.set(id,{units,boxes,whole:compatible?Math.max(0,Math.floor(boxes+1e-9)):null,compatible});
+    const compatible=Number.isFinite(size)&&size>0&&Math.abs(units-boxes*size)<=Math.max(0.02,size*0.0050001+0.005);
+    if(size&&!compatible){mismatch++;if(precision.length<5)precision.push({unitPerBox:size,difference:Math.round(Math.abs(units-boxes*size)*1000)/1000,boxDecimals:Number.isInteger(boxes)?0:String(boxes).split('.')[1]?.length||0})}
+    found.set(id,{units,boxes,whole:compatible?Math.max(0,Math.floor(units/size+1e-9)):null,compatible});
   }
   if(!found.size||!Number.isInteger(total)||found.size!==total)throw Error('INCOMPLETE_STOCK_REPORT');
   const items=Object.fromEntries([...found].filter(([id])=>catalog.has(id)));
-  return {position,items,reported:found.size,matched:Object.keys(items).length,mismatch};
+  return {position,items,reported:found.size,matched:Object.keys(items).length,mismatch,precision};
 }
 function makeStockSync(catalog){
   const id=process.env.PRIME_SHEETS_STOCK_ID;let current=null,inflight=null,checkedAt=0;
@@ -49,7 +49,7 @@ function makeStockSync(catalog){
             if(next[branch]?.position&&result.position<next[branch].position)throw Error('OLDER_STOCK_POSITION');
             const prev=next[branch];
             next[branch]={...result,status:'ok',syncedAt:prev&&JSON.stringify([prev.position,prev.items])===JSON.stringify([result.position,result.items])?prev.syncedAt:new Date().toISOString()};
-            console.log('[stock-sync] '+JSON.stringify({status:'ok',branch,tab:tab[0].title,position:result.position,reported:result.reported,matched:result.matched,mismatch:result.mismatch}));
+            console.log('[stock-sync] '+JSON.stringify({status:'ok',branch,tab:tab[0].title,position:result.position,reported:result.reported,matched:result.matched,mismatch:result.mismatch,precision:result.precision}));
           }catch(e){next[branch]={...(next[branch]||{items:{}}),status:next[branch]?.position?'stale':'unavailable'};console.log('[stock-sync] '+JSON.stringify({status:next[branch].status,branch,code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
         }
         current={branches:next};
