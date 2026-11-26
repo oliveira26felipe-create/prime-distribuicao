@@ -54,6 +54,27 @@ function makeSync(baseline){
         const data=await get('/values/'+encodeURIComponent("'Dados'!A1:D")+'?valueRenderOption=UNFORMATTED_VALUE');
         const [header,...rows]=data.values||[];
         if(header?.[0]!=='CODCLI'||header?.[1]!=='PRODUTO'||header?.[3]!=='VLVENDA')throw new Error('INVALID_DATA_LAYOUT');
+        if(!current.live&&process.env.PRIME_SHEETS_GOALS_ID){
+          try{
+            const gid=process.env.PRIME_SHEETS_GOALS_ID;
+            if(!/^[A-Za-z0-9_-]{20,120}$/.test(gid))throw new Error('INVALID_GOALS_ID');
+            const getG=async suffix=>{const r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(gid)+suffix,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(45000),redirect:'error'});if(!r.ok)throw new Error('GOALS_HTTP_'+r.status);return r.json()};
+            const info=await getG('?fields=properties(title),sheets(properties(title,gridProperties(rowCount,columnCount),sheetType,hidden))');
+            const tabs=info.sheets.map(t=>t.properties).filter(t=>t.sheetType==='GRID'&&!t.hidden);
+            console.log('[individual-check] '+JSON.stringify({title:info.properties.title,tabs:tabs.map(t=>({name:t.title,rows:t.gridProperties.rowCount,cols:t.gridProperties.columnCount}))}));
+            const ids=new Set(baseline.rows.map(r=>String(r[0]))),old=new Map(baseline.rows.map(r=>[String(r[0]),r[1]]));
+            const col=j=>{let x=j+1,t='';while(x){x--;t=String.fromCharCode(65+x%26)+t;x=Math.floor(x/26)}return t};
+            for(const t of tabs.slice(0,12)){
+              const range="'"+t.title.replace(/'/g,"''")+"'!A1:"+col(Math.min(119,t.gridProperties.columnCount-1))+Math.min(t.gridProperties.rowCount,2000);
+              const rr=(await getG('/values/'+encodeURIComponent(range)+'?valueRenderOption=UNFORMATTED_VALUE')).values||[];
+              const max=Math.max(0,...rr.map(r=>r.length));
+              const matches=Array.from({length:max},(_,j)=>({j,rows:rr.filter(r=>ids.has(String(r[j]??'').trim()))})).filter(x=>new Set(x.rows.map(r=>String(r[x.j]).trim())).size>=5);
+              const headers=rr.slice(0,8).map((r,i)=>({row:i+1,columns:r.map((v,j)=>typeof v==='string'&&v.length<65&&/meta|cod|cliente|loja|filial|novembro|mes|mês|realizado|faturamento/i.test(v)?{col:col(j),label:v}:null).filter(Boolean)})).filter(x=>x.columns.length);
+              const candidates=matches.map(x=>({codeCol:col(x.j),matchedRows:x.rows.length,stores:new Set(x.rows.map(r=>String(r[x.j]).trim())).size,columns:Array.from({length:max},(_,j)=>({col:col(j),numeric:x.rows.filter(r=>typeof r[j]==='number').length,sumCents:x.rows.reduce((n,r)=>n+(typeof r[j]==='number'?Math.round(r[j]*100):0),0),exact:x.rows.filter(r=>typeof r[j]==='number'&&Math.round(r[j]*100)===old.get(String(r[x.j]).trim())).length})).filter(y=>y.numeric>=5)}));
+              console.log('[individual-check] '+JSON.stringify({tab:t.title,rows:rr.length,headers,candidates}));
+            }
+          }catch(e){console.log('[individual-check] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
+        }
         const result=aggregate(rows,baseline);
         let officialGoal=current.officialGoal??null,goalSyncedAt=current.goalSyncedAt??null,goalStatus='unavailable';
         try{
