@@ -35,6 +35,23 @@ function readOfficialGoal(values){
   if(!Number.isSafeInteger(cents)||cents<=0)throw new Error('INVALID_OFFICIAL_GOAL');
   return cents;
 }
+function readStoreGoals(values,baseline){
+  const header=values[3]||[];
+  const norm=v=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
+  const [year,month]=baseline.month.split('-'),expected=norm(monthNames[Number(month)-1]);
+  if(!norm(values[0]?.[0]).includes(expected)||!norm(values[0]?.[0]).includes(year)||norm(header[1])!=='codigo cliente'||norm(header[4])!=='meta de faturamento (r$)')throw Error('INVALID_STORE_GOAL_LAYOUT_OR_MONTH');
+  const ids=new Set(baseline.rows.map(r=>String(r[0]))),found=new Map();
+  for(const r of values.slice(4)){
+    const id=String(r[1]??'').trim();
+    if(!ids.has(id))continue;
+    if(found.has(id))throw Error('DUPLICATE_STORE_GOAL');
+    const value=r[4],cents=typeof value==='number'?Math.round(value*100):null;
+    if(!Number.isSafeInteger(cents)||cents<0)throw Error('INVALID_STORE_GOAL');
+    found.set(id,cents);
+  }
+  if(found.size!==ids.size)throw Error('MISSING_STORE_GOALS');
+  return found;
+}
 function makeSync(baseline){
   const id=process.env.PRIME_SHEETS_FIRST_ID;
   let current=baseline,inflight=null,checkedAt=0;
@@ -54,27 +71,6 @@ function makeSync(baseline){
         const data=await get('/values/'+encodeURIComponent("'Dados'!A1:D")+'?valueRenderOption=UNFORMATTED_VALUE');
         const [header,...rows]=data.values||[];
         if(header?.[0]!=='CODCLI'||header?.[1]!=='PRODUTO'||header?.[3]!=='VLVENDA')throw new Error('INVALID_DATA_LAYOUT');
-        if(!current.live&&process.env.PRIME_SHEETS_GOALS_ID){
-          try{
-            const gid=process.env.PRIME_SHEETS_GOALS_ID;
-            if(!/^[A-Za-z0-9_-]{20,120}$/.test(gid))throw new Error('INVALID_GOALS_ID');
-            const getG=async suffix=>{const r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(gid)+suffix,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(45000),redirect:'error'});if(!r.ok)throw new Error('GOALS_HTTP_'+r.status);return r.json()};
-            const info=await getG('?fields=properties(title),sheets(properties(title,gridProperties(rowCount,columnCount),sheetType,hidden))');
-            const tabs=info.sheets.map(t=>t.properties).filter(t=>t.sheetType==='GRID'&&!t.hidden);
-            console.log('[individual-check] '+JSON.stringify({title:info.properties.title,tabs:tabs.map(t=>({name:t.title,rows:t.gridProperties.rowCount,cols:t.gridProperties.columnCount}))}));
-            const ids=new Set(baseline.rows.map(r=>String(r[0]))),old=new Map(baseline.rows.map(r=>[String(r[0]),r[1]]));
-            const col=j=>{let x=j+1,t='';while(x){x--;t=String.fromCharCode(65+x%26)+t;x=Math.floor(x/26)}return t};
-            for(const t of tabs.slice(0,12)){
-              const range="'"+t.title.replace(/'/g,"''")+"'!A1:"+col(Math.min(119,t.gridProperties.columnCount-1))+Math.min(t.gridProperties.rowCount,2000);
-              const rr=(await getG('/values/'+encodeURIComponent(range)+'?valueRenderOption=UNFORMATTED_VALUE')).values||[];
-              const max=Math.max(0,...rr.map(r=>r.length));
-              const matches=Array.from({length:max},(_,j)=>({j,rows:rr.filter(r=>ids.has(String(r[j]??'').trim()))})).filter(x=>new Set(x.rows.map(r=>String(r[x.j]).trim())).size>=5);
-              const headers=rr.slice(0,8).map((r,i)=>({row:i+1,columns:r.map((v,j)=>typeof v==='string'&&v.length<65&&/meta|cod|cliente|loja|filial|novembro|mes|mês|realizado|faturamento/i.test(v)?{col:col(j),label:v}:null).filter(Boolean)})).filter(x=>x.columns.length);
-              const candidates=matches.map(x=>({codeCol:col(x.j),matchedRows:x.rows.length,stores:new Set(x.rows.map(r=>String(r[x.j]).trim())).size,columns:Array.from({length:max},(_,j)=>({col:col(j),numeric:x.rows.filter(r=>typeof r[j]==='number').length,sumCents:x.rows.reduce((n,r)=>n+(typeof r[j]==='number'?Math.round(r[j]*100):0),0),exact:x.rows.filter(r=>typeof r[j]==='number'&&Math.round(r[j]*100)===old.get(String(r[x.j]).trim())).length})).filter(y=>y.numeric>=5)}));
-              console.log('[individual-check] '+JSON.stringify({tab:t.title,rows:rr.length,headers,candidates}));
-            }
-          }catch(e){console.log('[individual-check] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
-        }
         const result=aggregate(rows,baseline);
         let officialGoal=current.officialGoal??null,goalSyncedAt=current.goalSyncedAt??null,goalStatus='unavailable';
         try{
@@ -83,10 +79,30 @@ function makeSync(baseline){
           if(next!==officialGoal||!goalSyncedAt)goalSyncedAt=new Date().toISOString();
           officialGoal=next;goalStatus='ok';
         }catch(e){goalStatus=officialGoal===null?'unavailable':'stale';console.log('[goals-sync] '+JSON.stringify({status:goalStatus,code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CONNECTION_FAILED'}))}
-        const signature=JSON.stringify([result.rows,result.mixByStore,officialGoal,goalStatus]);
-        const oldSignature=JSON.stringify([current.rows,current.mixByStore,current.officialGoal??null,current.goalStatus??'unavailable']);
-        if(signature!==oldSignature||!current.live)current={month:baseline.month,rows:result.rows,mixByStore:result.mixByStore,live:true,source:'Flash de Vendas - aba Dados',syncedAt:new Date().toISOString(),officialGoal,goalSyncedAt,goalStatus};
-        if(goalStatus==='ok')console.log('[goals-sync] '+JSON.stringify({status:'ok',month:baseline.month,officialGoalCents:officialGoal,storeGoalSumCents:baseline.rows.reduce((n,r)=>n+r[1],0)}));
+        let storeGoalStatus=current.storeGoalStatus==='ok'||current.storeGoalStatus==='stale'?'stale':'unavailable',storeGoalSyncedAt=current.storeGoalSyncedAt??null;
+        const previousGoals=new Map(current.rows.map(r=>[String(r[0]),r[1]]));
+        result.rows=result.rows.map(([id,meta,actual])=>[id,previousGoals.get(id)??meta,actual]);
+        const gid=process.env.PRIME_SHEETS_GOALS_ID;
+        if(gid){
+          try{
+            if(!/^[A-Za-z0-9_-]{20,120}$/.test(gid))throw Error('INVALID_GOALS_ID');
+            const getG=async suffix=>{const r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(gid)+suffix,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(45000),redirect:'error'});if(!r.ok)throw Error('GOALS_HTTP_'+r.status);return r.json()};
+            const gInfo=await getG('?fields=properties(title)');
+            const title=String(gInfo.properties?.title||'').toLowerCase();
+            if(!title.includes(expected)||!title.includes(baseline.month.slice(0,4)))throw Error('STORE_GOAL_MONTH_MISMATCH');
+            const tab='Metas '+expected;
+            const g=await getG('/values/'+encodeURIComponent("'"+tab+"'!A1:E")+'?valueRenderOption=UNFORMATTED_VALUE');
+            const goals=readStoreGoals(g.values||[],baseline);
+            result.rows=result.rows.map(([id,meta,actual])=>[id,goals.get(id),actual]);
+            if(!storeGoalSyncedAt||result.rows.some(r=>r[1]!==previousGoals.get(r[0])))storeGoalSyncedAt=new Date().toISOString();
+            storeGoalStatus='ok';
+            console.log('[individual-sync] '+JSON.stringify({status:'ok',month:baseline.month,stores:goals.size,totalCents:result.rows.reduce((n,r)=>n+r[1],0),differenceCents:officialGoal===null?null:result.rows.reduce((n,r)=>n+r[1],0)-officialGoal}));
+          }catch(e){console.log('[individual-sync] '+JSON.stringify({status:storeGoalStatus,code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CONNECTION_FAILED'}))}
+        }
+        const signature=JSON.stringify([result.rows,result.mixByStore,officialGoal,goalStatus,storeGoalStatus]);
+        const oldSignature=JSON.stringify([current.rows,current.mixByStore,current.officialGoal??null,current.goalStatus??'unavailable',current.storeGoalStatus??'unavailable']);
+        if(signature!==oldSignature||!current.live)current={month:baseline.month,rows:result.rows,mixByStore:result.mixByStore,live:true,source:'Flash de Vendas - aba Dados',syncedAt:new Date().toISOString(),officialGoal,goalSyncedAt,goalStatus,storeGoalStatus,storeGoalSyncedAt};
+        if(goalStatus==='ok')console.log('[goals-sync] '+JSON.stringify({status:'ok',month:baseline.month,officialGoalCents:officialGoal,storeGoalSumCents:result.rows.reduce((n,r)=>n+r[1],0)}));
         console.log('[sheets-sync] '+JSON.stringify({status:'ok',month:baseline.month,stores:result.stores,lines:result.lines,totalCents:result.rows.reduce((a,r)=>a+r[2],0),changed:signature!==oldSignature}));
       }catch(e){console.log('[sheets-sync] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CONNECTION_FAILED'}))}
       finally{checkedAt=Date.now();inflight=null}
@@ -96,4 +112,4 @@ function makeSync(baseline){
   };
   return {get:()=>current,refresh,start(){if(!id||!baseline)return;refresh();const timer=setInterval(refresh,300000);timer.unref?.()}};
 }
-module.exports={makeSync,aggregate,readOfficialGoal};
+module.exports={makeSync,aggregate,readOfficialGoal,readStoreGoals};
