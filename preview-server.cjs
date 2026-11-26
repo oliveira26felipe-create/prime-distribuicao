@@ -75,4 +75,4 @@ const cookie=(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.star
 let valid=false;if(cookie){const val=cookie.slice('__Host-prime_preview='.length).split('.');if(val.length===3&&Number(val[0])>Date.now()&&safe(val[2],sign(val[0]+'.'+val[1])))valid=true}
 if(!valid)return send(res,200,withPwa(page()));
 return send(res,200,withPwa(enhancedHtml));
-}).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>console.log('Protected preview ready.'));
+}).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');require('./sheets-reader.cjs').run()});
