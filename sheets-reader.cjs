@@ -13,31 +13,50 @@ async function accessToken(){
   if(!resp.ok)throw new Error('TOKEN_HTTP_'+resp.status);
   const token=await resp.json();if(typeof token.access_token!=='string')throw new Error('INVALID_TOKEN_RESPONSE');return token.access_token;
 }
-async function inspect(id){
-  if(!/^[A-Za-z0-9_-]{20,120}$/.test(id))throw new Error('INVALID_SPREADSHEET_ID');
-  const token=await accessToken(),base='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(id);
-  const get=async range=>{const r=await fetch(base+'/values/'+encodeURIComponent(range)+'?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING',{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(45000),redirect:'error'});if(!r.ok)throw new Error('SHEETS_HTTP_'+r.status);return (await r.json()).values||[]};
-  const header=(await get("'Dados'!A1:Y1"))[0]||[];
-  const ids=new Set((JSON.parse(process.env.COMMERCIAL_SUMMARY_JSON||'null')?.rows||[]).map(r=>String(r[0])));
-  if(!ids.size)throw new Error('INVALID_STORE_LIST');
-  const letter=i=>String.fromCharCode(65+i),norm=s=>String(s??'').trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
-  console.log('[sheets-data] '+JSON.stringify({headers:header.map((h,i)=>({col:letter(i),label:String(h??'').slice(0,100)}))}));
-  if(header[0]!=='CODCLI'||header[1]!=='PRODUTO'||header[3]!=='VLVENDA'||header[8]!=='CODFOR')throw new Error('INVALID_DATA_LAYOUT');
-  const rows=await get("'Dados'!A2:I");
-  const source=Array.from({length:Number(process.env.PREVIEW_PARTS)||0},(_,i)=>process.env['PREVIEW_HTML_'+i]||'').join('');
-  const productBlock=source.match(/"produtos"\s*:\s*(\[[\s\S]*?\])\s*,\s*"visitas"/);
-  const products=new Set(productBlock?JSON.parse(productBlock[1]).map(p=>String(p.id)):[]);
-  const baseline=JSON.parse(process.env.COMMERCIAL_SUMMARY_JSON||'null');
-  const supplier=new Map(),totals=new Map(),matched=new Set(),sku=new Set();let invalid=0,negative=0,all=0,registered=0,lines=0;
+const monthNames=['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+function aggregate(rows,baseline){
+  const totals=new Map(baseline.rows.map(([id,meta])=>[String(id),{meta,actual:0,products:new Map()}]));
+  let lines=0,matched=new Set();
   for(const r of rows){
-    const code=String(r[0]??'').trim();if(!ids.has(code))continue;
-    const cents=typeof r[3]==='number'?Math.round(r[3]*100):null;
-    if(cents===null||!Number.isSafeInteger(cents)){invalid++;continue}
-    const prod=String(r[1]??'').trim(),forn=String(r[8]??'').trim(),isRegistered=products.has(prod);matched.add(code);sku.add(prod);lines++;all+=cents;if(cents<0)negative++;if(isRegistered)registered+=cents;
-    totals.set(code,(totals.get(code)||0)+cents);const v=supplier.get(forn)||{lines:0,cents:0,registered:0};v.lines++;v.cents+=cents;if(isRegistered)v.registered++;supplier.set(forn,v);
+    const code=String(r[0]??'').trim(),v=totals.get(code);if(!v)continue;
+    const p=String(r[1]??'').trim(),cents=typeof r[3]==='number'?Math.round(r[3]*100):null;
+    if(!p||!Number.isSafeInteger(cents))throw new Error('INVALID_SALES_ROW');
+    v.actual+=cents;if(!Number.isSafeInteger(v.actual))throw new Error('INVALID_SALES_TOTAL');
+    v.products.set(p,(v.products.get(p)||0)+cents);matched.add(code);lines++;
   }
-  const previous=baseline.rows.reduce((a,r)=>a+r[2],0),missing=[...ids].filter(x=>!matched.has(x));
-  console.log('[sheets-data] '+JSON.stringify({validation:{lines,stores:matched.size,missingCount:missing.length,missingPreviouslyPositive:baseline.rows.filter(r=>missing.includes(String(r[0]))&&r[2]>0).length,invalid,negative,uniqueProducts:sku.size,catalogProducts:products.size,registeredSalesCents:registered,allSalesCents:all,previousCents:previous,suppliers:[...supplier].map(([code,v])=>({code,...v}))}}));
+  if(!lines||matched.size<Math.ceil(totals.size/2))throw new Error('INCOMPLETE_SALES_BASE');
+  return {rows:[...totals].map(([id,v])=>[id,v.meta,v.actual]),mixByStore:Object.fromEntries([...totals].map(([id,v])=>[id,[...v.products.values()].filter(n=>n>0).length])),lines,stores:matched.size};
 }
-function run(){const id=process.env.PRIME_SHEETS_FIRST_ID;if(!id)return;inspect(id).catch(e=>console.log('[sheets-data] '+JSON.stringify({status:'error',code:/^(SECRET_FILE_|INVALID_|TOKEN_HTTP_|SHEETS_HTTP_)[A-Z0-9_]+$/.test(e.message)?e.message:'CONNECTION_FAILED'})))}
-module.exports={run,accessToken};
+function makeSync(baseline){
+  const id=process.env.PRIME_SHEETS_FIRST_ID;
+  let current=baseline,inflight=null,checkedAt=0;
+  const refresh=async()=>{
+    if(!id||!baseline)return current;
+    if(inflight)return inflight;
+    if(Date.now()-checkedAt<300000)return current;
+    inflight=(async()=>{
+      try{
+        if(!/^[A-Za-z0-9_-]{20,120}$/.test(id)||!/^\d{4}-(0[1-9]|1[0-2])$/.test(baseline.month))throw new Error('INVALID_SHEETS_CONFIG');
+        const token=await accessToken(),base='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(id);
+        const get=async suffix=>{const r=await fetch(base+suffix,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(45000),redirect:'error'});if(!r.ok)throw new Error('SHEETS_HTTP_'+r.status);return r.json()};
+        const info=await get('?fields=properties(title)');
+        const expected=monthNames[Number(baseline.month.slice(5))-1];
+        const title=String(info.properties?.title||'').toLowerCase();
+        if(!title.includes(expected))throw new Error('SOURCE_MONTH_MISMATCH');
+        const data=await get('/values/'+encodeURIComponent("'Dados'!A1:D")+'?valueRenderOption=UNFORMATTED_VALUE');
+        const [header,...rows]=data.values||[];
+        if(header?.[0]!=='CODCLI'||header?.[1]!=='PRODUTO'||header?.[3]!=='VLVENDA')throw new Error('INVALID_DATA_LAYOUT');
+        const result=aggregate(rows,baseline);
+        const signature=JSON.stringify([result.rows,result.mixByStore]);
+        const oldSignature=JSON.stringify([current.rows,current.mixByStore]);
+        if(signature!==oldSignature||!current.live)current={month:baseline.month,rows:result.rows,mixByStore:result.mixByStore,live:true,source:'Flash de Vendas - aba Dados',syncedAt:new Date().toISOString()};
+        console.log('[sheets-sync] '+JSON.stringify({status:'ok',month:baseline.month,stores:result.stores,lines:result.lines,totalCents:result.rows.reduce((a,r)=>a+r[2],0),changed:signature!==oldSignature}));
+      }catch(e){console.log('[sheets-sync] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CONNECTION_FAILED'}))}
+      finally{checkedAt=Date.now();inflight=null}
+      return current;
+    })();
+    return inflight;
+  };
+  return {get:()=>current,refresh,start(){if(!id||!baseline)return;refresh();const timer=setInterval(refresh,300000);timer.unref?.()}};
+}
+module.exports={makeSync,aggregate};
