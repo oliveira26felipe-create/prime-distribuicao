@@ -112,4 +112,4 @@ function makeSync(baseline){
   };
   return {get:()=>current,refresh,start(){if(!id||!baseline)return;refresh();const timer=setInterval(refresh,300000);timer.unref?.()}};
 }
-module.exports={makeSync,aggregate,readOfficialGoal,readStoreGoals};
+module.exports={makeSync,aggregate,readOfficialGoal,readStoreGoals,accessToken};
