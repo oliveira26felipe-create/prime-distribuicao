@@ -22,9 +22,22 @@ async function inspect(id){
   if(!ids.size)throw new Error('INVALID_STORE_LIST');
   const letter=i=>String.fromCharCode(65+i),norm=s=>String(s??'').trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
   console.log('[sheets-data] '+JSON.stringify({headers:header.map((h,i)=>({col:letter(i),label:String(h??'').slice(0,100)}))}));
-  const codeCols=header.map((h,i)=>({i,h:norm(h)})).filter(x=>/CLI|COD|PDV|LOJA/.test(x.h)).map(x=>x.i);
-  const cols=await Promise.all(codeCols.map(async i=>{const v=await get("'Dados'!"+letter(i)+"2:"+letter(i)+"55500");return {i,matched:v.filter(r=>ids.has(String(r[0]??'').trim())).length,stores:new Set(v.filter(r=>ids.has(String(r[0]??'').trim())).map(r=>String(r[0]).trim())).size}}));
-  console.log('[sheets-data] '+JSON.stringify({codeCandidates:cols.map(c=>({col:letter(c.i),matches:c.matched,stores:c.stores})),expected:ids.size}));
+  if(header[0]!=='CODCLI'||header[1]!=='PRODUTO'||header[3]!=='VLVENDA'||header[8]!=='CODFOR')throw new Error('INVALID_DATA_LAYOUT');
+  const rows=await get("'Dados'!A2:I");
+  const source=Array.from({length:Number(process.env.PREVIEW_PARTS)||0},(_,i)=>process.env['PREVIEW_HTML_'+i]||'').join('');
+  const productBlock=source.match(/"produtos"\s*:\s*(\[[\s\S]*?\])\s*,\s*"visitas"/);
+  const products=new Set(productBlock?JSON.parse(productBlock[1]).map(p=>String(p.id)):[]);
+  const baseline=JSON.parse(process.env.COMMERCIAL_SUMMARY_JSON||'null');
+  const supplier=new Map(),totals=new Map(),matched=new Set(),sku=new Set();let invalid=0,negative=0,all=0,registered=0,lines=0;
+  for(const r of rows){
+    const code=String(r[0]??'').trim();if(!ids.has(code))continue;
+    const cents=typeof r[3]==='number'?Math.round(r[3]*100):null;
+    if(cents===null||!Number.isSafeInteger(cents)){invalid++;continue}
+    const prod=String(r[1]??'').trim(),forn=String(r[8]??'').trim(),isRegistered=products.has(prod);matched.add(code);sku.add(prod);lines++;all+=cents;if(cents<0)negative++;if(isRegistered)registered+=cents;
+    totals.set(code,(totals.get(code)||0)+cents);const v=supplier.get(forn)||{lines:0,cents:0,registered:0};v.lines++;v.cents+=cents;if(isRegistered)v.registered++;supplier.set(forn,v);
+  }
+  const previous=baseline.rows.reduce((a,r)=>a+r[2],0),missing=[...ids].filter(x=>!matched.has(x));
+  console.log('[sheets-data] '+JSON.stringify({validation:{lines,stores:matched.size,missingCount:missing.length,missingPreviouslyPositive:baseline.rows.filter(r=>missing.includes(String(r[0]))&&r[2]>0).length,invalid,negative,uniqueProducts:sku.size,catalogProducts:products.size,registeredSalesCents:registered,allSalesCents:all,previousCents:previous,suppliers:[...supplier].map(([code,v])=>({code,...v}))}}));
 }
 function run(){const id=process.env.PRIME_SHEETS_FIRST_ID;if(!id)return;inspect(id).catch(e=>console.log('[sheets-data] '+JSON.stringify({status:'error',code:/^(SECRET_FILE_|INVALID_|TOKEN_HTTP_|SHEETS_HTTP_)[A-Z0-9_]+$/.test(e.message)?e.message:'CONNECTION_FAILED'})))}
 module.exports={run,accessToken};
