@@ -48,18 +48,16 @@ function makeSync(baseline){
         if(header?.[0]!=='CODCLI'||header?.[1]!=='PRODUTO'||header?.[3]!=='VLVENDA')throw new Error('INVALID_DATA_LAYOUT');
         if(!current.live){
           try{
-            const g=await get('/values/'+encodeURIComponent("'Metas x Realizado'!A1:DO997")+'?valueRenderOption=UNFORMATTED_VALUE');
-            const rr=g.values||[], ids=new Set(baseline.rows.map(r=>String(r[0])));
-            const col=i=>{let x=i+1,t='';while(x){x--;t=String.fromCharCode(65+x%26)+t;x=Math.floor(x/26)}return t};
-            const headers=rr.slice(0,6).map((r,i)=>({row:i+1,cells:r.map((v,j)=>typeof v==='string'&&v.trim()?{col:col(j),label:v.slice(0,90)}:null).filter(Boolean)}));
-            const matches=Array.from({length:Math.max(...rr.slice(0,6).map(r=>r.length))},(_,j)=>({j,rows:rr.slice(6).filter(r=>ids.has(String(r[j]??'').trim()))})).filter(x=>x.rows.length);
-            console.log('[goals-check] '+JSON.stringify({header:headers,matchedColumns:matches.map(x=>({col:col(x.j),rows:x.rows.length,stores:new Set(x.rows.map(r=>String(r[x.j]))).size}))}));
-            for(const x of matches.filter(x=>new Set(x.rows.map(r=>String(r[x.j]))).size>=5)){
-              const base=new Map(baseline.rows.map(r=>[String(r[0]),r[1]]));
-              const metrics=Array.from({length:Math.max(...rr.slice(0,6).map(r=>r.length))},(_,j)=>{const label=String(rr[5]?.[j]??'');if(!/meta|venda/i.test(label))return null;const vv=x.rows.map(r=>r[j]);return {col:col(j),label,numeric:vv.filter(v=>typeof v==='number').length,sumCents:vv.reduce((a,v)=>a+(typeof v==='number'?Math.round(v*100):0),0),exact:x.rows.filter(r=>typeof r[j]==='number'&&Math.round(r[j]*100)===base.get(String(r[x.j]))).length}}).filter(Boolean);
-              console.log('[goals-check] '+JSON.stringify({codeColumn:col(x.j),metrics}));
+            const ids=new Set(baseline.rows.map(r=>String(r[0]))),ranges=["'Metas x Realizado'!A1:CG997","'METAS DASH'!A1:BI1000","'Flash'!A1:AO1000","'Base Jose Carlos'!A1:Z1000"];
+            for(const range of ranges){
+              const g=await get('/values/'+encodeURIComponent(range)+'?valueRenderOption=UNFORMATTED_VALUE'),rr=g.values||[];
+              const col=i=>{let x=i+1,t='';while(x){x--;t=String.fromCharCode(65+x%26)+t;x=Math.floor(x/26)}return t};
+              const max=Math.max(0,...rr.map(r=>r.length)),matches=Array.from({length:max},(_,j)=>({col:col(j),stores:new Set(rr.filter(r=>ids.has(String(r[j]??'').trim())).map(r=>String(r[j]).trim())).size})).filter(x=>x.stores>=2);
+              const named=rr.map((r,i)=>({r,i})).filter(({r})=>r.some(v=>typeof v==='string'&&/americanas|\bLASA\b/i.test(v))).slice(0,40).map(({r,i})=>({row:i+1,labels:r.map((v,j)=>typeof v==='string'&&/americanas|\bLASA\b/i.test(v)?{col:col(j),text:v.slice(0,75)}:null).filter(Boolean),code:typeof r[1]==='number'?r[1]:null,totalMeta:range.includes('Metas x Realizado')&&typeof r[81]==='number'?r[81]:null}));
+              const headers=rr.slice(0,13).map((r,i)=>({row:i+1,columns:r.map((v,j)=>typeof v==='string'&&/^(cod|cód|cliente|loja|meta|faturamento|equipe|vendedor)/i.test(v)&&v.length<35?{col:col(j),label:v}:null).filter(Boolean)})).filter(r=>r.columns.length>0);
+              console.log('[goals-source] '+JSON.stringify({range,rows:rr.length,matches,named,headers:range.includes('Metas x Realizado')?undefined:headers.slice(0,5)}));
             }
-          }catch(e){console.log('[goals-check] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
+          }catch(e){console.log('[goals-source] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
         }
         const result=aggregate(rows,baseline);
         const signature=JSON.stringify([result.rows,result.mixByStore]);
