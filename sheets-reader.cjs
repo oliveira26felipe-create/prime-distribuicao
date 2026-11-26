@@ -46,6 +46,21 @@ function makeSync(baseline){
         const data=await get('/values/'+encodeURIComponent("'Dados'!A1:D")+'?valueRenderOption=UNFORMATTED_VALUE');
         const [header,...rows]=data.values||[];
         if(header?.[0]!=='CODCLI'||header?.[1]!=='PRODUTO'||header?.[3]!=='VLVENDA')throw new Error('INVALID_DATA_LAYOUT');
+        if(!current.live){
+          try{
+            const g=await get('/values/'+encodeURIComponent("'Metas x Realizado'!A1:DO997")+'?valueRenderOption=UNFORMATTED_VALUE');
+            const rr=g.values||[], ids=new Set(baseline.rows.map(r=>String(r[0])));
+            const col=i=>{let x=i+1,t='';while(x){x--;t=String.fromCharCode(65+x%26)+t;x=Math.floor(x/26)}return t};
+            const headers=rr.slice(0,6).map((r,i)=>({row:i+1,cells:r.map((v,j)=>typeof v==='string'&&v.trim()?{col:col(j),label:v.slice(0,90)}:null).filter(Boolean)}));
+            const matches=Array.from({length:Math.max(...rr.slice(0,6).map(r=>r.length))},(_,j)=>({j,rows:rr.slice(6).filter(r=>ids.has(String(r[j]??'').trim()))})).filter(x=>x.rows.length);
+            console.log('[goals-check] '+JSON.stringify({header:headers,matchedColumns:matches.map(x=>({col:col(x.j),rows:x.rows.length,stores:new Set(x.rows.map(r=>String(r[x.j]))).size}))}));
+            for(const x of matches.filter(x=>new Set(x.rows.map(r=>String(r[x.j]))).size>=5)){
+              const base=new Map(baseline.rows.map(r=>[String(r[0]),r[1]]));
+              const metrics=Array.from({length:Math.max(...rr.slice(0,6).map(r=>r.length))},(_,j)=>{const label=String(rr[5]?.[j]??'');if(!/meta|venda/i.test(label))return null;const vv=x.rows.map(r=>r[j]);return {col:col(j),label,numeric:vv.filter(v=>typeof v==='number').length,sumCents:vv.reduce((a,v)=>a+(typeof v==='number'?Math.round(v*100):0),0),exact:x.rows.filter(r=>typeof r[j]==='number'&&Math.round(r[j]*100)===base.get(String(r[x.j]))).length}}).filter(Boolean);
+              console.log('[goals-check] '+JSON.stringify({codeColumn:col(x.j),metrics}));
+            }
+          }catch(e){console.log('[goals-check] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
+        }
         const result=aggregate(rows,baseline);
         const signature=JSON.stringify([result.rows,result.mixByStore]);
         const oldSignature=JSON.stringify([current.rows,current.mixByStore]);
