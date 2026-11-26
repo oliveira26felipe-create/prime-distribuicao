@@ -25,7 +25,8 @@ function aggregate(rows,baseline){
     v.products.set(p,(v.products.get(p)||0)+cents);matched.add(code);lines++;
   }
   if(!lines||matched.size<Math.ceil(totals.size/2))throw new Error('INCOMPLETE_SALES_BASE');
-  return {rows:[...totals].map(([id,v])=>[id,v.meta,v.actual]),mixByStore:Object.fromEntries([...totals].map(([id,v])=>[id,[...v.products.values()].filter(n=>n>0).length])),lines,stores:matched.size};
+  const soldByStore=Object.fromEntries([...totals].map(([id,v])=>[id,[...v.products].filter(([,n])=>n>0).map(([p])=>p).sort()]));
+  return {rows:[...totals].map(([id,v])=>[id,v.meta,v.actual]),mixByStore:Object.fromEntries(Object.entries(soldByStore).map(([id,p])=>[id,p.length])),soldByStore,lines,stores:matched.size};
 }
 function readOfficialGoal(values){
   if(values[3]?.[81]!=='TOTAL'||values[4]?.[81]!=='Faturamento'||values[5]?.[81]!=='Meta'||values[5]?.[1]!=='Cod'||values[5]?.[2]!=='EQUIPE')throw new Error('INVALID_GOAL_LAYOUT');
@@ -99,12 +100,13 @@ function makeSync(baseline){
             console.log('[individual-sync] '+JSON.stringify({status:'ok',month:baseline.month,stores:goals.size,totalCents:result.rows.reduce((n,r)=>n+r[1],0),differenceCents:officialGoal===null?null:result.rows.reduce((n,r)=>n+r[1],0)-officialGoal}));
           }catch(e){console.log('[individual-sync] '+JSON.stringify({status:storeGoalStatus,code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CONNECTION_FAILED'}))}
         }
-        const signature=JSON.stringify([result.rows,result.mixByStore,officialGoal,goalStatus,storeGoalStatus]);
-        const oldSignature=JSON.stringify([current.rows,current.mixByStore,current.officialGoal??null,current.goalStatus??'unavailable',current.storeGoalStatus??'unavailable']);
-        if(signature!==oldSignature||!current.live)current={month:baseline.month,rows:result.rows,mixByStore:result.mixByStore,live:true,source:'Flash de Vendas - aba Dados',syncedAt:new Date().toISOString(),officialGoal,goalSyncedAt,goalStatus,storeGoalStatus,storeGoalSyncedAt};
+        const signature=JSON.stringify([result.rows,result.mixByStore,result.soldByStore,'ok',officialGoal,goalStatus,storeGoalStatus]);
+        const oldSignature=JSON.stringify([current.rows,current.mixByStore,current.soldByStore,current.mixStatus??'unavailable',current.officialGoal??null,current.goalStatus??'unavailable',current.storeGoalStatus??'unavailable']);
+        if(signature!==oldSignature||!current.live)current={month:baseline.month,rows:result.rows,mixByStore:result.mixByStore,soldByStore:result.soldByStore,mixStatus:'ok',live:true,source:'Flash de Vendas - aba Dados',syncedAt:new Date().toISOString(),officialGoal,goalSyncedAt,goalStatus,storeGoalStatus,storeGoalSyncedAt};
         if(goalStatus==='ok')console.log('[goals-sync] '+JSON.stringify({status:'ok',month:baseline.month,officialGoalCents:officialGoal,storeGoalSumCents:result.rows.reduce((n,r)=>n+r[1],0)}));
+        console.log('[mix-sync] '+JSON.stringify({status:'ok',month:baseline.month,stores:Object.keys(result.soldByStore).length,positiveStores:Object.values(result.soldByStore).filter(p=>p.length>0).length,distinctCodes:new Set(Object.values(result.soldByStore).flat()).size}));
         console.log('[sheets-sync] '+JSON.stringify({status:'ok',month:baseline.month,stores:result.stores,lines:result.lines,totalCents:result.rows.reduce((a,r)=>a+r[2],0),changed:signature!==oldSignature}));
-      }catch(e){console.log('[sheets-sync] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CONNECTION_FAILED'}))}
+      }catch(e){if(current.live&&current.mixStatus==='ok')current={...current,mixStatus:'stale'};console.log('[sheets-sync] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CONNECTION_FAILED'}))}
       finally{checkedAt=Date.now();inflight=null}
       return current;
     })();
