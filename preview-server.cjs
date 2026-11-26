@@ -26,14 +26,19 @@ const commercialJs=fs.readFileSync(pathUtil.join(__dirname,'commercial-summary.j
 const commercialImport=JSON.parse(process.env.COMMERCIAL_SUMMARY_JSON||'null');
 if(commercialImport&&(!/^\d{4}-\d{2}$/.test(commercialImport.month)||!Array.isArray(commercialImport.rows)||commercialImport.rows.length!==36||new Set(commercialImport.rows.map(r=>r[0])).size!==36||commercialImport.rows.some(r=>!/^\d+$/.test(r[0])||!Number.isSafeInteger(r[1])||!Number.isSafeInteger(r[2])||r[1]<0)))throw Error('Invalid commercial import');
 const sheetsSync=require('./sheets-reader.cjs').makeSync(commercialImport);
+const stockJs=fs.readFileSync(pathUtil.join(__dirname,'stock-panel.js'),'utf8');
+const stockCatalogBlock=html.match(/"produtos"\s*:\s*(\[[\s\S]*?\])\s*,\s*"visitas"/);
+const stockCatalog=new Map(stockCatalogBlock?JSON.parse(stockCatalogBlock[1]).map(p=>[String(p.id),Number(p.unc)]):[]);
+const stockSync=require('./stock-reader.cjs').makeStockSync(stockCatalog);
+
 const commercialPayload=JSON.stringify(commercialImport).replace(/</g,'\\u003c');
 const commercialTag='<script>window.PRIME_COMMERCIAL_IMPORT='+commercialPayload+';</script><script src="/commercial-summary.js"></script>';
 const polishJs=fs.readFileSync(pathUtil.join(__dirname,'prime-polish.js'),'utf8');
 const polishCss=fs.readFileSync(pathUtil.join(__dirname,'prime-polish.css'),'utf8');
-const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(polishJs).update(polishCss).update(commercialJs).update(commercialPayload).update(html).digest('hex').slice(0,24);
+const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(polishJs).update(polishCss).update(commercialJs).update(stockJs).update(commercialPayload).update(html).digest('hex').slice(0,24);
 const enhancedHtml=expiryHtml(html).replace('</style>',".goal-progress{background:#344155!important}.goal-progress>div,.goal-progress.complete>div{background:linear-gradient(90deg,#7ED957 0%,#8EEA6B 100%)!important}</style>").replace('<script src="/validade.js"></script>',commercialTag+'<script src="/validade.js"></script>').replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</style>',polishCss+'</style>').replace('</html>','<script src="/prime-polish.js"></script><script src="/session-update.js"></script></html>');
-function liveVersion(){const v=sheetsSync.get();return v?.live?crypto.createHash('sha256').update(release).update(JSON.stringify(v)).digest('hex').slice(0,24):release}
-function liveHtml(){const v=sheetsSync.get();if(!v?.live)return enhancedHtml;const payload=JSON.stringify(v).replace(/</g,'\\u003c');return enhancedHtml.replace(commercialTag,()=>'<script>window.PRIME_COMMERCIAL_IMPORT='+payload+';</script><script src="/commercial-summary.js"></script>').replace('content="'+release+'"','content="'+liveVersion()+'"')}
+function liveVersion(){const v=sheetsSync.get(),stock=stockSync.get();return v?.live||stock?crypto.createHash('sha256').update(release).update(JSON.stringify([v,stock])).digest('hex').slice(0,24):release}
+function liveHtml(){const v=sheetsSync.get(),stock=stockSync.get();const payload=JSON.stringify(v).replace(/</g,'\\u003c'),stockPayload=JSON.stringify(stock).replace(/</g,'\\u003c');return enhancedHtml.replace(commercialTag,()=>'<script>window.PRIME_COMMERCIAL_IMPORT='+payload+';window.PRIME_STOCK_IMPORT='+stockPayload+';</script><script src="/commercial-summary.js"></script><script>'+stockJs+'</script>').replace('content="'+release+'"','content="'+liveVersion()+'"')}
 const hash=v=>crypto.createHash('sha256').update(v).digest();
 const expected=hash(password);
 const key=crypto.scryptSync(password,'prime-preview-session-v1',32);
@@ -78,4 +83,4 @@ const cookie=(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.star
 let valid=false;if(cookie){const val=cookie.slice('__Host-prime_preview='.length).split('.');if(val.length===3&&Number(val[0])>Date.now()&&safe(val[2],sign(val[0]+'.'+val[1])))valid=true}
 if(!valid)return send(res,200,withPwa(page()));
 return send(res,200,withPwa(liveHtml()));
-}).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start()});
+}).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start();stockSync.start()});
