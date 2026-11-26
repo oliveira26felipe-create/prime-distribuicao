@@ -25,12 +25,15 @@ const updateJs=fs.readFileSync(pathUtil.join(__dirname,'session-update.js'),'utf
 const commercialJs=fs.readFileSync(pathUtil.join(__dirname,'commercial-summary.js'),'utf8');
 const commercialImport=JSON.parse(process.env.COMMERCIAL_SUMMARY_JSON||'null');
 if(commercialImport&&(!/^\d{4}-\d{2}$/.test(commercialImport.month)||!Array.isArray(commercialImport.rows)||commercialImport.rows.length!==36||new Set(commercialImport.rows.map(r=>r[0])).size!==36||commercialImport.rows.some(r=>!/^\d+$/.test(r[0])||!Number.isSafeInteger(r[1])||!Number.isSafeInteger(r[2])||r[1]<0)))throw Error('Invalid commercial import');
+const sheetsSync=require('./sheets-reader.cjs').makeSync(commercialImport);
 const commercialPayload=JSON.stringify(commercialImport).replace(/</g,'\\u003c');
 const commercialTag='<script>window.PRIME_COMMERCIAL_IMPORT='+commercialPayload+';</script><script src="/commercial-summary.js"></script>';
 const polishJs=fs.readFileSync(pathUtil.join(__dirname,'prime-polish.js'),'utf8');
 const polishCss=fs.readFileSync(pathUtil.join(__dirname,'prime-polish.css'),'utf8');
 const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(polishJs).update(polishCss).update(commercialJs).update(commercialPayload).update(html).digest('hex').slice(0,24);
 const enhancedHtml=expiryHtml(html).replace('</style>',".goal-progress{background:#344155!important}.goal-progress>div,.goal-progress.complete>div{background:linear-gradient(90deg,#7ED957 0%,#8EEA6B 100%)!important}</style>").replace('<script src="/validade.js"></script>',commercialTag+'<script src="/validade.js"></script>').replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</style>',polishCss+'</style>').replace('</html>','<script src="/prime-polish.js"></script><script src="/session-update.js"></script></html>');
+function liveVersion(){const v=sheetsSync.get();return v?.live?crypto.createHash('sha256').update(release).update(JSON.stringify(v)).digest('hex').slice(0,24):release}
+function liveHtml(){const v=sheetsSync.get();if(!v?.live)return enhancedHtml;const payload=JSON.stringify(v).replace(/</g,'\\u003c');return enhancedHtml.replace(commercialTag,()=>'<script>window.PRIME_COMMERCIAL_IMPORT='+payload+';</script><script src="/commercial-summary.js"></script>').replace('content="'+release+'"','content="'+liveVersion()+'"')}
 const hash=v=>crypto.createHash('sha256').update(v).digest();
 const expected=hash(password);
 const key=crypto.scryptSync(password,'prime-preview-session-v1',32);
@@ -49,7 +52,7 @@ res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-
 const path=req.url.split('?')[0];
 if((req.method==='GET'||req.method==='HEAD')&&Object.hasOwn(publicAssets,path)){const [type,data]=publicAssets[path];res.writeHead(200,{'Content-Type':type});return res.end(req.method==='HEAD'?undefined:data)}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/validade.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:require('node:fs').readFileSync(require('node:path').join(__dirname,'validade.js')))}
-if((req.method==='GET'||req.method==='HEAD')&&path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:release}))}
+if((req.method==='GET'||req.method==='HEAD')&&path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:liveVersion()}))}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/session-update.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:updateJs)}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/commercial-summary.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:commercialJs)}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/prime-polish.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:polishJs)}
@@ -74,5 +77,5 @@ if(path!=='/'&&path!=='/index.html'){res.writeHead(404);return res.end('Not foun
 const cookie=(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.startsWith('__Host-prime_preview='));
 let valid=false;if(cookie){const val=cookie.slice('__Host-prime_preview='.length).split('.');if(val.length===3&&Number(val[0])>Date.now()&&safe(val[2],sign(val[0]+'.'+val[1])))valid=true}
 if(!valid)return send(res,200,withPwa(page()));
-return send(res,200,withPwa(enhancedHtml));
-}).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');require('./sheets-reader.cjs').run()});
+return send(res,200,withPwa(liveHtml()));
+}).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start()});
