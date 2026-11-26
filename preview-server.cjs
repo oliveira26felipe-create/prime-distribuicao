@@ -19,7 +19,7 @@ const installJs="(()=>{let promptEvent=null;const standalone=()=>matchMedia('(di
 const withPwa=source=>source.replace(/<title>/i,pwaHead+'<title>');
 const publicAssets={'/app.webmanifest':['application/manifest+json; charset=utf-8',manifest],'/app-icon-192.png':['image/png',icon192],'/app-icon-512.svg':['image/svg+xml',icon512],'/app-sw.js':['application/javascript; charset=utf-8',worker],'/install.js':['application/javascript; charset=utf-8',installJs]};
 
-const expiryHtml=source=>{const changes=[["pages.push(['estoque','Estoque']);","pages.push(['estoque','Estoque'],['validade','Validades']);"],["if(page==='historico')h+=historyPanel(a);","if(page==='historico')h+=historyPanel(a);if(page==='validade')h+=primeExpiryPanel(a);"],["loginScreen();</script></html>",'loginScreen();</script><script src="/validade.js"></script></html>']];for(const [a,b] of changes){if(!source.includes(a))throw Error('Preview validity integration mismatch');source=source.replace(a,b)}return source};
+const expiryHtml=source=>{const changes=[["pages.push(['estoque','Estoque']);","pages.push(['estoque','Estoque'],['validade','Validades'],['oportunidades','Oportunidades de mix']);"],["if(page==='historico')h+=historyPanel(a);","if(page==='historico')h+=historyPanel(a);if(page==='validade')h+=primeExpiryPanel(a);if(page==='oportunidades')h+=primeMixPanel(a,picker,search,table,tr);"],["loginScreen();</script></html>",'loginScreen();</script><script src="/validade.js"></script></html>']];for(const [a,b] of changes){if(!source.includes(a))throw Error('Preview validity integration mismatch');source=source.replace(a,b)}return source};
 const fs=require('node:fs'),pathUtil=require('node:path');
 const updateJs=fs.readFileSync(pathUtil.join(__dirname,'session-update.js'),'utf8');
 const commercialJs=fs.readFileSync(pathUtil.join(__dirname,'commercial-summary.js'),'utf8');
@@ -27,6 +27,7 @@ const commercialImport=JSON.parse(process.env.COMMERCIAL_SUMMARY_JSON||'null');
 if(commercialImport&&(!/^\d{4}-\d{2}$/.test(commercialImport.month)||!Array.isArray(commercialImport.rows)||commercialImport.rows.length!==36||new Set(commercialImport.rows.map(r=>r[0])).size!==36||commercialImport.rows.some(r=>!/^\d+$/.test(r[0])||!Number.isSafeInteger(r[1])||!Number.isSafeInteger(r[2])||r[1]<0)))throw Error('Invalid commercial import');
 const sheetsSync=require('./sheets-reader.cjs').makeSync(commercialImport);
 const stockJs=fs.readFileSync(pathUtil.join(__dirname,'stock-panel.js'),'utf8');
+const mixJs=fs.readFileSync(pathUtil.join(__dirname,'mix-panel.js'),'utf8');
 const stockCatalogBlock=html.match(/"produtos"\s*:\s*(\[[\s\S]*?\])\s*,\s*"visitas"/);
 const stockCatalog=new Map(stockCatalogBlock?JSON.parse(stockCatalogBlock[1]).map(p=>[String(p.id),Number(p.unc)]):[]);
 const stockSync=require('./stock-reader.cjs').makeStockSync(stockCatalog);
@@ -35,10 +36,10 @@ const commercialPayload=JSON.stringify(commercialImport).replace(/</g,'\\u003c')
 const commercialTag='<script>window.PRIME_COMMERCIAL_IMPORT='+commercialPayload+';</script><script src="/commercial-summary.js"></script>';
 const polishJs=fs.readFileSync(pathUtil.join(__dirname,'prime-polish.js'),'utf8');
 const polishCss=fs.readFileSync(pathUtil.join(__dirname,'prime-polish.css'),'utf8');
-const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(polishJs).update(polishCss).update(commercialJs).update(stockJs).update(commercialPayload).update(html).digest('hex').slice(0,24);
+const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).update(fs.readFileSync(pathUtil.join(__dirname,'validade.js'))).update(updateJs).update(polishJs).update(polishCss).update(commercialJs).update(stockJs).update(mixJs).update(commercialPayload).update(html).digest('hex').slice(0,24);
 const enhancedHtml=expiryHtml(html).replace('</style>',".goal-progress{background:#344155!important}.goal-progress>div,.goal-progress.complete>div{background:linear-gradient(90deg,#7ED957 0%,#8EEA6B 100%)!important}</style>").replace('<script src="/validade.js"></script>',commercialTag+'<script src="/validade.js"></script>').replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</style>',polishCss+'</style>').replace('</html>','<script src="/prime-polish.js"></script><script src="/session-update.js"></script></html>');
 function liveVersion(){const v=sheetsSync.get(),stock=stockSync.get();return v?.live||stock?crypto.createHash('sha256').update(release).update(JSON.stringify([v,stock])).digest('hex').slice(0,24):release}
-function liveHtml(){const v=sheetsSync.get(),stock=stockSync.get();const payload=JSON.stringify(v).replace(/</g,'\\u003c'),stockPayload=JSON.stringify(stock).replace(/</g,'\\u003c');return enhancedHtml.replace(commercialTag,()=>'<script>window.PRIME_COMMERCIAL_IMPORT='+payload+';window.PRIME_STOCK_IMPORT='+stockPayload+';</script><script src="/commercial-summary.js"></script><script>'+stockJs+'</script>').replace('content="'+release+'"','content="'+liveVersion()+'"')}
+function liveHtml(){const v=sheetsSync.get(),stock=stockSync.get();const payload=JSON.stringify(v).replace(/</g,'\\u003c'),stockPayload=JSON.stringify(stock).replace(/</g,'\\u003c');return enhancedHtml.replace(commercialTag,()=>'<script>window.PRIME_COMMERCIAL_IMPORT='+payload+';window.PRIME_STOCK_IMPORT='+stockPayload+';</script><script src="/commercial-summary.js"></script><script>'+stockJs+'</script><script>'+mixJs+'</script>').replace('content="'+release+'"','content="'+liveVersion()+'"')}
 const hash=v=>crypto.createHash('sha256').update(v).digest();
 const expected=hash(password);
 const key=crypto.scryptSync(password,'prime-preview-session-v1',32);
