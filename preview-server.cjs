@@ -25,7 +25,7 @@ const updateJs=fs.readFileSync(pathUtil.join(__dirname,'session-update.js'),'utf
 const commercialJs=fs.readFileSync(pathUtil.join(__dirname,'commercial-summary.js'),'utf8');
 const commercialImport=JSON.parse(process.env.COMMERCIAL_SUMMARY_JSON||'null');
 if(commercialImport&&(!/^\d{4}-\d{2}$/.test(commercialImport.month)||!Array.isArray(commercialImport.rows)||commercialImport.rows.length!==36||new Set(commercialImport.rows.map(r=>r[0])).size!==36||commercialImport.rows.some(r=>!/^\d+$/.test(r[0])||!Number.isSafeInteger(r[1])||!Number.isSafeInteger(r[2])||r[1]<0)))throw Error('Invalid commercial import');
-const sheetsSync=require('./sheets-reader.cjs').makeSync(commercialImport);
+const sheetsSync=require('./sheets-reader.cjs').makeMonthSync(commercialImport);
 const stockJs=fs.readFileSync(pathUtil.join(__dirname,'stock-panel.js'),'utf8');
 const mixJs=fs.readFileSync(pathUtil.join(__dirname,'mix-panel.js'),'utf8');
 const integrationJs=fs.readFileSync(pathUtil.join(__dirname,'integration-panel.js'),'utf8');
