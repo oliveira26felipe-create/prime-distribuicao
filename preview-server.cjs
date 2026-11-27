@@ -40,6 +40,17 @@ const release=crypto.createHash('sha256').update(fs.readFileSync(__filename)).up
 const enhancedHtml=expiryHtml(html).replace('</style>',".goal-progress{background:#344155!important}.goal-progress>div,.goal-progress.complete>div{background:linear-gradient(90deg,#7ED957 0%,#8EEA6B 100%)!important}</style>").replace('<script src="/validade.js"></script>',commercialTag+'<script src="/validade.js"></script>').replace(/<title>/i,'<meta name="prime-release" content="'+release+'"><title>').replace('</style>',polishCss+'</style>').replace('</html>','<script src="/prime-polish.js"></script><script src="/session-update.js"></script></html>');
 function liveVersion(){const v=sheetsSync.get(),stock=stockSync.get();return v?.live||stock?crypto.createHash('sha256').update(release).update(JSON.stringify([v,stock])).digest('hex').slice(0,24):release}
 function liveHtml(){const v=sheetsSync.get(),stock=stockSync.get();const payload=JSON.stringify(v).replace(/</g,'\\u003c'),stockPayload=JSON.stringify(stock).replace(/</g,'\\u003c');return enhancedHtml.replace(commercialTag,()=>'<script>window.PRIME_COMMERCIAL_IMPORT='+payload+';window.PRIME_STOCK_IMPORT='+stockPayload+';</script><script src="/commercial-summary.js"></script><script>'+stockJs+'</script><script>'+mixJs+'</script>').replace('content="'+release+'"','content="'+liveVersion()+'"')}
+// A apresentação utiliza a mesma autenticação e as mesmas fontes somente leitura.
+function presentationHtml(source){
+  return source.replace(/<title>[^<]*<\/title>/i,'<title>Prime Distribuição | Gestão Americanas</title>')
+    .replace('DEMONSTRAÇÃO INTERNA • Estoques de exemplo, sem validade operacional • Alterações temporárias nesta sessão','Apresentação executiva • Balanços de exemplo e alterações temporárias; dados comerciais vinculados')
+    .replace('Gestão de estoque | Americanas','Gestão Americanas')
+    .replace('</style>','.prime-presentation-switch{display:flex;justify-content:flex-end;align-items:center;gap:12px;padding:8px 18px;background:#142236;color:#e0e9f5;font:13px Arial,sans-serif}.prime-presentation-switch a{color:#c5dcff;text-decoration:none;font-weight:600}.prime-presentation-switch a:hover{text-decoration:underline}.prime-presentation-switch span{margin-right:auto;color:#aebed0}@media(max-width:600px){.prime-presentation-switch{padding:8px 12px;font-size:12px}} </style>')
+    .replace('<header>','<div class="prime-presentation-switch"><span>Apresentação executiva</span><a href="/">Voltar à prévia</a></div><header>');
+}
+function presentationLogin(error=''){
+  return page(error).replace('action="/entrar"','action="/entrar?modo=final"').replace('Acesso administrativo','Gestão comercial e estoque | Americanas').replace('Ambiente de demonstração. Os registros não são sincronizados.','Apresentação para validação. Os balanços e alterações de teste não são armazenados permanentemente.').replace('</main>','<p><a style="color:#b8d6ff" href="/">Voltar à prévia</a></p></main>');
+}
 const hash=v=>crypto.createHash('sha256').update(v).digest();
 const expected=hash(password);
 const key=crypto.scryptSync(password,'prime-preview-session-v1',32);
@@ -56,6 +67,8 @@ res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
 res.setHeader('X-Frame-Options','DENY');
 res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline'; img-src data: blob: 'self'; font-src data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
 const path=req.url.split('?')[0];
+const finalMode=path==='/final'||new URL(req.url,'http://localhost').searchParams.get('modo')==='final';
+const loginPage=finalMode?presentationLogin:page;
 if((req.method==='GET'||req.method==='HEAD')&&Object.hasOwn(publicAssets,path)){const [type,data]=publicAssets[path];res.writeHead(200,{'Content-Type':type});return res.end(req.method==='HEAD'?undefined:data)}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/validade.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:require('node:fs').readFileSync(require('node:path').join(__dirname,'validade.js')))}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/session-update.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:updateJs)}
@@ -67,26 +80,26 @@ if(req.method==='POST'&&path==='/entrar'){
   const now=Date.now();
   for(const [k,v] of attempts)if(v.until<now)attempts.delete(k);
   let a=attempts.get(ip)||{count:0,until:now+600000};
-  if(a.count>=12)return send(res,429,page('Muitas tentativas. Tente novamente mais tarde.'));
-  if(attempts.size>5000&&!attempts.has(ip))return send(res,429,page('Tente novamente mais tarde.'));
-  let body='';try{for await(const chunk of req){body+=chunk;if(body.length>4096){return send(res,413,page('Solicitação inválida.'))}}}catch{return send(res,400,page('Solicitação inválida.'))}
+  if(a.count>=12)return send(res,429,loginPage('Muitas tentativas. Tente novamente mais tarde.'));
+  if(attempts.size>5000&&!attempts.has(ip))return send(res,429,loginPage('Tente novamente mais tarde.'));
+  let body='';try{for await(const chunk of req){body+=chunk;if(body.length>4096){return send(res,413,loginPage('Solicitação inválida.'))}}}catch{return send(res,400,loginPage('Solicitação inválida.'))}
   const f=new URLSearchParams(body);
-  if((f.get('user')||'').trim().toLowerCase()!==adminUsername||!crypto.timingSafeEqual(hash(f.get('password')||''),expected)){a.count++;attempts.set(ip,a);return send(res,401,page('Usuário ou senha incorretos.'))}
+  if((f.get('user')||'').trim().toLowerCase()!==adminUsername||!crypto.timingSafeEqual(hash(f.get('password')||''),expected)){a.count++;attempts.set(ip,a);return send(res,401,loginPage('Usuário ou senha incorretos.'))}
   attempts.delete(ip);
   const token=String(now+30*24*60*60*1000)+'.'+crypto.randomBytes(16).toString('hex');
-  res.writeHead(303,{'Location':'/?login=1','Set-Cookie':'__Host-prime_preview='+token+'.'+sign(token)+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=2592000'});return res.end();
+  res.writeHead(303,{'Location':finalMode?'/final?login=1':'/?login=1','Set-Cookie':'__Host-prime_preview='+token+'.'+sign(token)+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=2592000'});return res.end();
 }
 if(req.method!=='GET'&&req.method!=='HEAD'){res.writeHead(405);return res.end()}
-if(path==='/sair-previa'){res.writeHead(303,{'Location':'/','Set-Cookie':'__Host-prime_preview=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'});return res.end()}
-if(path!=='/'&&path!=='/index.html'&&path!=='/versao'){res.writeHead(404);return res.end('Not found')}
+if(path==='/sair-previa'){res.writeHead(303,{'Location':finalMode?'/final':'/','Set-Cookie':'__Host-prime_preview=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'});return res.end()}
+if(path!=='/'&&path!=='/index.html'&&path!=='/versao'&&path!=='/final'){res.writeHead(404);return res.end('Not found')}
 const cookie=(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.startsWith('__Host-prime_preview='));
 let valid=false;if(cookie){const val=cookie.slice('__Host-prime_preview='.length).split('.');if(val.length===3&&Number(val[0])>Date.now()&&safe(val[2],sign(val[0]+'.'+val[1])))valid=true}
 if(path==='/versao'&&!valid){res.writeHead(401,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({error:'AUTH_REQUIRED'}))}
-if(!valid)return send(res,200,withPwa(page()));
+if(!valid)return send(res,200,withPwa(loginPage()));
 // A consulta de versão e a abertura autenticada também verificam fontes vencidas.
 // Limitar a espera evita travar a navegação durante uma indisponibilidade do Google.
 let timeout;
 try{await Promise.race([Promise.allSettled([sheetsSync.refresh(),stockSync.refresh()]),new Promise(resolve=>{timeout=setTimeout(resolve,7000);timeout.unref?.()})])}finally{clearTimeout(timeout)}
 if(path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:liveVersion(),stock:stockSync.get()}))}
-return send(res,200,withPwa(liveHtml()));
+return send(res,200,withPwa(finalMode?presentationHtml(liveHtml()):liveHtml()));
 }).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start();stockSync.start()});
