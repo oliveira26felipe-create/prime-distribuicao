@@ -33,8 +33,8 @@ function reportDate(v){
 function collectOrders(rows,ids,month,groups,bad){
  for(const r of rows){
   const store=String(r[0]??'').trim();if(!ids.has(store)||dateMonth(r[11])!==month||r[3]===0)continue;
-  const id=String(r[13]??'').trim(),branch=String(r[18]??'').trim(),sku=String(r[1]??'').trim(),date=reportDate(r[10]),exit=reportDate(r[11]),q=r[6],c=Math.round(r[3]*100);
-  if(!/^[A-Za-z0-9._-]{1,40}$/.test(id)||!['5','8'].includes(branch)||!sku||sku.length>64||!date||!exit||date>exit||typeof q!=='number'||!Number.isFinite(q)||q<=0||q>1e9||!Number.isSafeInteger(c)||c<=0){bad.add(store);continue}
+  const id=String(r[13]??'').trim(),branch=String(Number(r[18])),sku=String(r[1]??'').trim(),date=reportDate(r[10]),exit=reportDate(r[11]),q=r[6],c=Math.round(r[3]*100);
+  if(!/^[A-Za-z0-9._-]{1,40}$/.test(id)||!['5','8'].includes(branch)||!/^\d{1,20}$/.test(sku)||!date||!exit||date>exit||typeof q!=='number'||!Number.isFinite(q)||q<=0||q>1e9||!Number.isSafeInteger(c)||c<=0){bad.add(store);continue}
   const m=groups.get(store)||new Map();groups.set(store,m);
   const key=branch+':'+id,rec=m.get(key)||{id,branch,date,exit,items:{}};m.set(key,rec);
   if(rec.date!==date){bad.add(store);continue}
