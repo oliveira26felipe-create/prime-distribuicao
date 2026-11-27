@@ -31,6 +31,7 @@ function makeStockSync(catalog){
   const id=process.env.PRIME_SHEETS_STOCK_ID;let current=null,inflight=null,checkedAt=0;
   async function refresh(){
     if(!id)return current;if(inflight)return inflight;if(Date.now()-checkedAt<300000)return current;
+    checkedAt=Date.now();
     inflight=(async()=>{
       try{
         if(!/^[A-Za-z0-9_-]{20,120}$/.test(id))throw Error('INVALID_STOCK_ID');
@@ -54,10 +55,10 @@ function makeStockSync(catalog){
         }
         current={branches:next};
       }catch(e){if(current)current={branches:Object.fromEntries(Object.entries(current.branches).map(([b,v])=>[b,{...v,status:v.position?'stale':'unavailable'}]))};console.log('[stock-sync] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
-      finally{checkedAt=Date.now();inflight=null}
+      finally{inflight=null}
       return current;
     })();return inflight;
   }
-  return {get:()=>current,refresh,start(){if(!id)return;refresh();const timer=setInterval(refresh,300000);timer.unref?.()}};
+  return {get:()=>current,refresh,start(){if(!id)return;refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
 module.exports={makeStockSync,parsePosition};
