@@ -1,7 +1,8 @@
 'use strict';
 const assert=require('node:assert/strict');
-const {aggregate,validateCoverage,readOfficialGoal,readStoreGoals,makeSync}=require('./sheets-reader.cjs');
+const {aggregate,validateCoverage,readOfficialGoal,readStoreGoals,makeSync,parseClosures}=require('./sheets-reader.cjs');
 const {parsePosition}=require('./stock-reader.cjs');
+const {makeStockBackup,encode,decode}=require('./stock-backup.cjs');
 const {makeHistory,encodeSnapshot,decodeSnapshot}=require('./history-store.cjs');
 async function run(){
  let checks=0;const check=(condition,label)=>{assert.ok(condition,label);checks++};
@@ -65,6 +66,36 @@ async function run(){
  const restored=makeHistory(opts);await restored.load();check(restored.get().get('2026-11').rows.length===36,'recuperação após reinício');
  const rejected=makeHistory({...opts,excludedIds:new Set([opts.id])});await rejected.load();
  check(rejected.health().error==='INVALID_HISTORY_DESTINATION','não gravar nas fontes de origem');
+
+ const cat=new Map([['5906',12]]);
+ const stockRow=encode('5',stock,cat);
+ check(decode(stockRow,cat).items['5906'].whole===9,'backup de estoque íntegro');
+ throws(()=>decode([stockRow[0],stockRow[1],'0'.repeat(64),stockRow[3]],cat),/STOCK_BACKUP_DIGEST_MISMATCH/);
+ const duplicate=[...report.slice(0,-1),report[3],['',2,'Itens Listados','Total Geral :']];
+ try{parsePosition(duplicate,cat);assert.fail('duplicidade aceita')}catch(e){check(e.message==='DUPLICATE_STOCK_PRODUCT'&&e.detail?.rows.join(',')==='4,5','diagnóstico com linhas duplicadas')}
+ try{parsePosition(report.map((r,i)=>i===4?['',2,'Itens Listados','Total Geral :']:r),cat);assert.fail('incompleto aceito')}catch(e){check(e.message==='INCOMPLETE_STOCK_REPORT'&&e.detail?.expected===2&&e.detail?.identified===1,'diagnóstico da quantidade esperada')}
+ throws(()=>parsePosition([...report,report[4]],cat),/INCOMPLETE_STOCK_REPORT/);
+ let stockTab=false,stockRows=[],stockWrites=0;
+ const stockFetch=async(url,opt)=>{
+  const u=decodeURIComponent(url);let data;
+  if(u.includes('?fields='))data={properties:{title:'PRIME - Histórico Americanas'},sheets:stockTab?[{properties:{title:'EstoquePrime'}}]:[]};
+  else if(u.includes(':batchUpdate')){stockTab=true;data={}}
+  else if(u.includes(':append')){const v=JSON.parse(opt.body).values;stockRows.push(...v);stockWrites++;data={updates:{updatedRows:v.length}}}
+  else if(opt.method==='PUT'){stockRows=JSON.parse(opt.body).values;data={}}
+  else if(opt.method==='GET')data={values:stockRows};
+  else throw Error('UNEXPECTED_TEST_URL');
+  return {ok:true,json:async()=>data};
+ };
+ const bopts={id:'synthetic-history-destination',catalog:cat,excludedIds:new Set(),token:async()=>'test',fetchFn:stockFetch,log:()=>{}};
+ const b=makeStockBackup(bopts);await b.load();await b.save({'5':{...stock,status:'ok'},'8':{...stock,status:'stale'}});await b.save({'5':{...stock,status:'ok'}});
+ check(stockWrites===1&&b.health().branches.join(',')==='5','backup idempotente e exclusão de leituras inválidas');
+ const recovered=makeStockBackup(bopts),restoredStocks=await recovered.load();
+ check(restoredStocks.get('5').status==='stale'&&restoredStocks.get('5').items['5906'].whole===9,'restauração após reinício sinalizada');
+ const blocked=makeStockBackup({...bopts,excludedIds:new Set([bopts.id])});await blocked.load();check(blocked.health().error==='INVALID_STOCK_BACKUP_DESTINATION','proteção das planilhas de origem');
+ const known=new Set(['2026-11','2026-12']);
+ check(parseClosures('{}','2026-12',known).size===0,'virada de mês não encerra automaticamente');
+ check(parseClosures(JSON.stringify({'2026-11':encoded[2]}),'2026-12',known).get('2026-11')===encoded[2],'encerramento exige hash de snapshot');
+ throws(()=>parseClosures(JSON.stringify({'2026-12':encoded[2]}),'2026-12',known),/INVALID_CLOSURE_REGISTRY/);
  return checks;
 }
 if(require.main===module)run().then(checks=>console.log('[self-test] '+JSON.stringify({status:'ok',checks}))).catch(e=>{console.error('[self-test] failed',e.message);process.exitCode=1});
