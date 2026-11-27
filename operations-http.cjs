@@ -56,6 +56,7 @@ function makeOperations({seed,adminName,verifyAdmin,sign,safe,archiveId,excluded
  }
  async function handle(req,res,url){
   try{
+   if(url==='/operacional/order-suggestion.js'&&req.method==='GET'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(fs.readFileSync(path.join(__dirname,'order-suggestion.js'),'utf8'))}
    if(url==='/operacional/original.js'&&req.method==='GET'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(originalScript)}
    if(url==='/operacional/ui.js'&&req.method==='GET'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(script)}
    if(url==='/operacional/logout'&&req.method==='GET'){res.writeHead(303,{'Location':'/operacional','Set-Cookie':COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'});return res.end()}
