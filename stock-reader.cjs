@@ -39,7 +39,7 @@ function parsePosition(values,catalog){
 }
 function makeStockSync(catalog){
   const id=process.env.PRIME_SHEETS_STOCK_ID;let current=null,inflight=null,checkedAt=0;let health={'5':{status:'pending'},'8':{status:'pending'}};
-  const excludedIds=new Set([id,process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID,process.env.PRIME_SHEETS_PRICES_ID,process.env.PRIME_SHEETS_ORDERS_ID]);
+  const excludedIds=new Set([id,process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID,process.env.PRIME_SHEETS_PRICES_ID,process.env.PRIME_SHEETS_ORDERS_ID,process.env.PRIME_CANDIDATE_FAROL_ID,process.env.PRIME_CANDIDATE_META_ID]);
   let registryValid=true;try{const r=JSON.parse(process.env.PRIME_MONTH_SOURCES_JSON||'[]');if(!Array.isArray(r))throw Error('INVALID_MONTH_REGISTRY');for(const v of r){excludedIds.add(v.salesId);excludedIds.add(v.goalsId)}}catch{registryValid=false}
   const backup=makeStockBackup({id:registryValid?process.env.PRIME_HISTORY_ID:null,catalog,excludedIds,token:accessWriteToken});
   function mark(k,status,extra={}){health[k]={...health[k],status,checkedAt:new Date().toISOString(),...extra,...(status==='ok'?{lastSuccess:new Date().toISOString(),error:null,detail:null}:{})}}
