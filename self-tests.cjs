@@ -164,6 +164,12 @@ async function run(){
  const op2=ops.createStore(opOpts);await op2.init();check((await op2.getState(principal)).latest['1']['5906'].qty===5,'recupera balanço após reinicialização');
  await op2.mutate(admin,{id:crypto.randomUUID(),kind:'account',data:{username:'promotor1',profile:'P1',password:'',enabled:false}});
  await assert.rejects(()=>op2.getState(principal),/AUTH_REQUIRED/);checks++;
+ check(!require('./sheets-reader.cjs').rollingReadAllowed('2026-11','2026-12',true)&&require('./sheets-reader.cjs').rollingReadAllowed('2026-12','2026-12',true),'virada protege competência anterior de fonte permanente');
+ const mergedBalances=ops.latestBalances([{store:'1',at:'2026-11-20T12:00:00Z',author:'P1',items:{'5906':{qty:5,lots:[{date:'2027-01-01',qty:3}]}}},{store:'1',at:'2026-11-21T12:00:00Z',author:'P1',items:{'5907':{qty:4,lots:[]}}},{store:'1',at:'2026-11-22T12:00:00Z',author:'P1',cancelled:{reason:'teste'},items:{'5906':{qty:0,lots:[]}}}]);
+ check(mergedBalances['1']['5906'].qty===5&&mergedBalances['1']['5906'].lots[0].qty===3&&mergedBalances['1']['5907'].qty===4,'contagens parciais e estornos preservam saldo por produto');
+ const hist=await op2.history(admin,0);check(hist.total===1&&hist.rows[0].id===event.id,'histórico paginado autorizado');
+ const voided=await op2.mutate(admin,{id:crypto.randomUUID(),kind:'correction',data:{balanceId:event.id,reason:'Teste de estorno'}});
+ check(voided.ok&&(await op2.getState(admin)).balances[0].cancelled.reason==='Teste de estorno'&&!Object.keys((await op2.getState(admin)).latest).length,'estorno auditável sem saldo indevido');
  const supply=require('./supply-reader.cjs'),now=Date.now(),stamp=new Date(now).toISOString().replace(/\.\d{3}Z$/,'Z');
  const control=n=>[['POSICAO',stamp],['REGISTROS',n],['COMPLETO','SIM']];
  const pendingHead=['FILIAL','CODCLI','PRODUTO','PEDIDO','ITEM','QTD_PENDENTE_UN'];
