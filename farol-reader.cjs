@@ -22,6 +22,32 @@ function normalizeFarolRows(rows,ids,month){
  }
  return found;
 }
+// Preserve purchase orders separately from commercial totals. Quantity is the
+// report's raw QTVENDA; never assume it is units or boxes.
+function reportDate(v){
+ if(typeof v==='number'&&Number.isFinite(v)&&v>=40000&&v<80000)return new Date(Date.UTC(1899,11,30)+Math.floor(v)*86400000).toISOString().slice(0,10);
+ const t=String(v??'').trim(),a=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s|$)/),b=t.match(/^(\d{4})-(\d{2})-(\d{2})(?:T|\s|$)/);
+ const d=a?[a[3],a[2].padStart(2,'0'),a[1].padStart(2,'0')].join('-'):b?b.slice(1).join('-'):'';
+ return dateMonth(d)?d:null;
+}
+function collectOrders(rows,ids,month,groups,bad){
+ for(const r of rows){
+  const store=String(r[0]??'').trim();if(!ids.has(store)||dateMonth(r[11])!==month||r[3]===0)continue;
+  const id=String(r[13]??'').trim(),branch=String(r[18]??'').trim(),sku=String(r[1]??'').trim(),date=reportDate(r[10]),exit=reportDate(r[11]),q=r[6],c=Math.round(r[3]*100);
+  if(!/^[A-Za-z0-9._-]{1,40}$/.test(id)||!['5','8'].includes(branch)||!sku||sku.length>64||!date||!exit||date>exit||typeof q!=='number'||!Number.isFinite(q)||q<=0||q>1e9||!Number.isSafeInteger(c)||c<=0){bad.add(store);continue}
+  const m=groups.get(store)||new Map();groups.set(store,m);
+  const key=branch+':'+id,rec=m.get(key)||{id,branch,date,exit,items:{}};m.set(key,rec);
+  if(rec.date!==date){bad.add(store);continue}
+  if(exit>rec.exit)rec.exit=exit;
+  const old=rec.items[sku]||[0,0];rec.items[sku]=[old[0]+q,old[1]+c];
+  if(!Number.isFinite(rec.items[sku][0])||!Number.isSafeInteger(rec.items[sku][1]))bad.add(store);
+ }
+}
+function recentOrders(groups,bad){
+ const out={};
+ for(const [store,m] of groups)if(!bad.has(store))out[store]=[...m.values()].sort((a,b)=>b.date.localeCompare(a.date)||b.exit.localeCompare(a.exit)||b.id.localeCompare(a.id)).slice(0,3);
+ return out;
+}
 async function readFarol(get,id,baseline){
  const meta=await get(id,'?fields=properties(title),sheets(properties(title,gridProperties(rowCount)))');
  if(norm(meta.properties?.title)!=='8095 - FAROL')throw Error('FAROL_TITLE_MISMATCH');
@@ -32,8 +58,12 @@ async function readFarol(get,id,baseline){
  const values=async range=>(await get(id,'/values/'+encodeURIComponent(range)+'?valueRenderOption=UNFORMATTED_VALUE')).values||[];
  const header=(await values("'8095'!1:1"))[0]||[];
  for(const [i,name] of [[2,'CODCLI'],[3,'PRODUTO'],[5,'VLVENDA'],[10,'VLDEVOLUCAO'],[13,'DTSAIDA']])if(norm(header[i])!==name)throw Error('INVALID_FAROL_LAYOUT');
- const ids=new Set(baseline.rows.map(r=>String(r[0]))),rows=[];
- for(let start=2;start<=count;start+=10000){const end=Math.min(count,start+9999);rows.push(...normalizeFarolRows(await values("'8095'!C"+start+":N"+end),ids,baseline.month))}
+ const ids=new Set(baseline.rows.map(r=>String(r[0]))),rows=[],groups=new Map(),bad=new Set();
+ const orderLayout=[[8,'QTVENDA'],[12,'DTPED'],[15,'PEDIDO'],[20,'FILIAL']].every(([i,name])=>norm(header[i])===name);
+ for(let start=2;start<=count;start+=10000){const end=Math.min(count,start+9999),chunk=await values("'8095'!C"+start+":"+(orderLayout?'U':'N')+end);rows.push(...normalizeFarolRows(chunk,ids,baseline.month));if(orderLayout)collectOrders(chunk,ids,baseline.month,groups,bad)}
+ rows.orderHistory=orderLayout?recentOrders(groups,bad):null;
+ rows.orderStatus=!orderLayout?'layout_invalid':bad.size?'partial':'ok';
+ console.log('[orders-history] '+JSON.stringify({month:baseline.month,status:rows.orderStatus,stores:Object.keys(rows.orderHistory||{}).length,orders:Object.values(rows.orderHistory||{}).reduce((n,x)=>n+x.length,0),invalidStores:bad.size}));
  return rows;
 }
 function readMetaRows(values){
@@ -60,4 +90,4 @@ async function readMetaFlash(get,id,month,calendarMonth,confirmedMetaMonth){
  if(marker.length===1){const b=await readMarker();if((typeof b==='number'?dateMonth(b):String(b??'').trim())!==month)throw Error('META_FLASH_PERIOD_UNCONFIRMED')}
  return readMetaRows(values);
 }
-module.exports={dateMonth,normalizeFarolRows,readFarol,readMetaRows,readMetaFlash};
+module.exports={dateMonth,normalizeFarolRows,readFarol,readMetaRows,readMetaFlash,collectOrders,recentOrders,reportDate};
