@@ -16,8 +16,9 @@ function body(){
  row('Flash / mix',s,(s.month||'')+' • '+(s.lines??'—')+' registros • '+(s.stores??'—')+'/36 lojas com linhas • '+money(s.totalCents))+
  row('Meta geral',o,money(o.totalCents))+
  row('Metas individuais',i,(i.stores??'—')+'/36 lojas • '+money(i.totalCents))+
+ row('Histórico permanente',a.history||{},a.history?.configured?'Meses arquivados: '+(a.history.months||[]).join(', '):'Aguardando planilha exclusiva com permissão de edição')+
  ['5','8'].map(k=>{const v=g[k]||{};return row('Estoque '+k.padStart(2,'0'),v,(v.position||'—').replace('T',' ')+' • '+(v.matched??'—')+' SKUs • '+(v.mismatch??'—')+' divergências',age(v.position)>86400000)}).join('')+
- '</tbody></table></div><p><small>Uma consulta bem-sucedida não significa que o relatório do Winthor seja recente. Estoque com mais de 24h é sinalizado. Lojas sem linhas no Flash exigem conferência na origem. Histórico permanente, contas individuais e novas competências ainda dependem de configuração.</small></p>';
+ '</tbody></table></div><p><small>Uma consulta bem-sucedida não significa que o relatório do Winthor seja recente. Estoque com mais de 24h é sinalizado. Lojas sem linhas no Flash exigem conferência na origem. Contas individuais e novas competências dependem de configuração. O histórico só é permanente quando a fonte exclusiva estiver conectada.</small></p>';
 }
 window.primeIntegrationPanel=()=>role()==='Administrador'?'<h1>Integrações</h1><section id="primeIntegrationBody">'+body()+'</section>':'';
 window.primeUpdateHealth=next=>{if(!next)return;h=next;window.PRIME_SYNC_HEALTH=next;const node=document.getElementById('primeIntegrationBody');if(node&&page==='integracoes')node.innerHTML=body()};
