@@ -147,10 +147,35 @@ function makeMonthSync(baseline){
     }
     for(const cfg of accepted)readers.set(cfg.month,makeSync({month:cfg.month,rows:baseline.rows.map(([id])=>[id,null,null])},{...cfg,minStores:cfg.minStores??1,requireYear:true}));
   }catch(e){registryError=errorCode(e);console.log('[month-registry] '+JSON.stringify({status:'error',code:registryError}))}
+  ids.add(process.env.PRIME_SHEETS_STOCK_ID);ids.add(process.env.PRIME_SHEETS_PRICES_ID);ids.add(process.env.PRIME_SHEETS_ORDERS_ID);
+  const history=require('./history-store.cjs').makeHistory({id:process.env.PRIME_HISTORY_ID,storeIds:new Set(baseline.rows.map(([id])=>String(id))),excludedIds:ids,token:accessWriteToken});
+  let flight=null;
   const active=()=>readers.has(monthNow())?monthNow():[...readers.keys()].filter(m=>m<=monthNow()).sort().at(-1)||baseline.month;
-  const refresh=async(force=false)=>{const current=active();await Promise.allSettled([...readers].filter(([m,r])=>force||m===current||!r.get().live||r.get().goalStatus!=='ok'||r.get().storeGoalStatus!=='ok').map(([,r])=>r.refresh(force)));return get()};
-  const get=()=>({...readers.get(active()).get(),months:Object.fromEntries([...readers].map(([m,r])=>[m,r.get()]))});
-  const health=()=>({...readers.get(active()).health(),month:active(),calendarMonth:monthNow(),configuredMonths:[...readers.keys()].sort(),registryError,months:Object.fromEntries([...readers].map(([m,r])=>[m,r.health()]))});
+  const months=()=>{
+    const archived=history.get(),all=Object.fromEntries(archived);
+    for(const [month,reader] of readers){
+      const saved=archived.get(month);
+      if(saved&&month<monthNow())continue;
+      all[month]=reader.get();
+    }
+    return all;
+  };
+  const get=()=>{const all=months();return {...(all[active()]||baseline),months:all}};
+  const health=()=>({...readers.get(active()).health(),month:active(),calendarMonth:monthNow(),configuredMonths:[...readers.keys()].sort(),registryError,history:history.health(),months:Object.fromEntries([...readers].map(([m,r])=>[m,r.health()]))});
+  const refresh=async(force=false)=>{
+    if(flight)return flight;
+    flight=(async()=>{
+      try{
+        const saved=await history.load();
+        for(const [m,r] of readers)if(saved.has(m))r.restore(saved.get(m));
+        const current=active();
+        await Promise.allSettled([...readers].filter(([m,r])=>!(saved.has(m)&&m<monthNow())&&(force||m===current||!r.get().live||r.get().goalStatus!=='ok'||r.get().storeGoalStatus!=='ok')).map(([,r])=>r.refresh(force)));
+        await history.save([...readers].filter(([m])=>!(saved.has(m)&&m<monthNow())).map(([,r])=>r.get()));
+      }finally{flight=null}
+      return get();
+    })();return flight;
+  };
   return {get,health,refresh,start(){refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
+
 module.exports={makeSync,makeMonthSync,aggregate,readOfficialGoal,readStoreGoals,accessToken,accessWriteToken,validateCoverage};
