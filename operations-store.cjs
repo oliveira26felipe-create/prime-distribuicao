@@ -66,7 +66,11 @@ function latestBalances(balances){
 function applyEvent(state,e,c,adminName){
  if(!e||!uuid(e.id)||!Number.isFinite(Date.parse(e.at))||typeof e.actor!=='string'||typeof e.actorName!=='string')throw err('INVALID_OPERATIONAL_EVENT');
  const json=JSON.stringify(e),prior=state.events.get(e.id);if(prior){if(prior!==json)throw err('OPERATIONAL_EVENT_CONFLICT',409);return}
- if(e.kind==='offboard'){
+ if(e.kind==='archive_account'){
+  const a=state.users.get(e.data?.username);
+  if(e.actor!==adminName||!a||a.enabled||a.archived||a.profile!==e.data?.profile)throw err('INVALID_ACCOUNT_ARCHIVE');
+  state.users.set(a.username,{...a,archived:true});
+ }else if(e.kind==='offboard'){
   const a=state.users.get(e.data?.username);if(e.actor!==adminName||!a?.enabled||profiles(c).get(a.profile)?.role!=='promoter'||!uuid(e.data.version))throw err('INVALID_OFFBOARD');
   state.users.set(a.username,{...a,enabled:false,version:e.data.version});
   for(const l of c.stores.values())if(effectiveStore(state,l).promoter===a.profile)state.assignments.set(l.id,'');
@@ -135,7 +139,7 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
   catch(e){ready=false;throw err('OPERATIONAL_WRITE_UNCONFIRMED',503)}
  }
  const publicUser=u=>({username:u.username,profile:u.profile,enabled:u.enabled});
- async function getState(claims){return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);const stores=[...catalog.stores.values()].map(l=>effectiveStore(s,l)).filter(l=>permitted(u,l));const ids=new Set(stores.map(l=>l.id)),balances=s.balances.filter(v=>ids.has(v.store));const latest=latestBalances(balances);return {user:u,canBalance:canBalance(u),canTarget:canTarget(u),stores,products:[...catalog.products.values()],latest,balances:balances.slice(-100).reverse(),balanceCount:balances.length,targets:Object.fromEntries([...s.targets].filter(([id])=>ids.has(id))),...(u.role==='admin'?{users:[...s.users.values()].map(publicUser),profiles:[...profiles(catalog).values()]}:{})}})}
+ async function getState(claims){return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);const stores=[...catalog.stores.values()].map(l=>effectiveStore(s,l)).filter(l=>permitted(u,l));const ids=new Set(stores.map(l=>l.id)),balances=s.balances.filter(v=>ids.has(v.store));const latest=latestBalances(balances);return {user:u,canBalance:canBalance(u),canTarget:canTarget(u),stores,products:[...catalog.products.values()],latest,balances:balances.slice(-100).reverse(),balanceCount:balances.length,targets:Object.fromEntries([...s.targets].filter(([id])=>ids.has(id))),...(u.role==='admin'?{users:[...s.users.values()].filter(a=>!a.archived).map(publicUser),profiles:[...profiles(catalog).values()]}:{})}})}
  async function history(claims,offset=0){
  return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);if(!Number.isSafeInteger(offset)||offset<0)throw err('INVALID_HISTORY_OFFSET');const rows=s.balances.filter(b=>permitted(u,effectiveStore(s,catalog.stores.get(b.store)))).slice().reverse();return {rows:rows.slice(offset,offset+100),total:rows.length,offset};});
  }
@@ -180,7 +184,7 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
    if(typeof d.enabled!=='boolean')throw err('INVALID_ACCOUNT');
    let salt,hash;
    if(d.password){if(typeof d.password!=='string'||d.password.length<12||d.password.length>128)throw err('PASSWORD_LENGTH');salt=crypto.randomBytes(16).toString('hex');hash=crypto.scryptSync(d.password,salt,32).toString('hex')}
-   else{if(!prior||d.enabled&&prior.profile!==d.profile)throw err('PASSWORD_REQUIRED');salt=prior.salt;hash=prior.hash}
+   else{if(!prior||prior.archived||d.enabled&&prior.profile!==d.profile)throw err('PASSWORD_REQUIRED');salt=prior.salt;hash=prior.hash}
    data=normalizeAccount({username,profile:d.profile,enabled:d.enabled,version:crypto.randomUUID(),salt,hash},catalog,adminName);
    if(data.enabled&&[...s.users.values()].some(v=>v.enabled&&v.profile===data.profile&&v.username!==username))throw err('PROFILE_ALREADY_ASSIGNED',409);
   }else throw err('INVALID_OPERATIONAL_KIND');
@@ -188,6 +192,19 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
   await append(e);return {ok:true,id:e.id,at:e.at};
  })}
 
+ // Optional one-time archival of a specifically identified inactive account.
+ // Original account events and balances remain in the append-only ledger.
+ async function archiveConfiguredAccount(){
+  if(!process.env.PRIME_ARCHIVE_INACTIVE_ACCOUNT)return;
+  const d=JSON.parse(process.env.PRIME_ARCHIVE_INACTIVE_ACCOUNT);
+  if(!uuid(d?.id)||typeof d.username!=='string'||typeof d.profile!=='string')throw err('INVALID_ACCOUNT_ARCHIVE');
+  const s=await load(true);
+  if(s.events.has(d.id))return;
+  const a=s.users.get(d.username);
+  if(!a||a.enabled||a.archived||a.profile!==d.profile)throw err('INVALID_ACCOUNT_ARCHIVE');
+  await append({id:d.id,at:new Date().toISOString(),actor:adminName,actorName:'Administrador',kind:'archive_account',data:{username:d.username,profile:d.profile}});
+  log('[account-archive] '+JSON.stringify({status:'ok',count:1}));
+ }
  // One-time provisioning from private deployment configuration; never reset existing accounts.
  async function provision(password,rotate=false){
   if(!password)return;
@@ -215,6 +232,6 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
   log((rotate?'[operations-rotation] ':'[operations-provision] ')+JSON.stringify({status:checked.length===planned.length?'ok':'existing_accounts_not_changed',changed:events.length,existing,verified:checked.length,total:planned.length}));
  }
 
- return {init:()=>exclusive(async()=>{try{await load();if(process.env.PRIME_ROTATE_PASSWORD)await provision(process.env.PRIME_ROTATE_PASSWORD,true);else if(process.env.PRIME_PROVISION_PASSWORD)await provision(process.env.PRIME_PROVISION_PASSWORD);log('[operations] '+JSON.stringify({status:'ok',balances:state.balances.length,accounts:health.accounts}))}catch(e){log('[operations] '+JSON.stringify({status:'unavailable',code:e.message}))}}),getState,history,authenticate,mutate,health:()=>health};
+ return {init:()=>exclusive(async()=>{try{await load();if(process.env.PRIME_ROTATE_PASSWORD)await provision(process.env.PRIME_ROTATE_PASSWORD,true);else if(process.env.PRIME_PROVISION_PASSWORD)await provision(process.env.PRIME_PROVISION_PASSWORD);await archiveConfiguredAccount();log('[operations] '+JSON.stringify({status:'ok',balances:state.balances.length,accounts:health.accounts}))}catch(e){log('[operations] '+JSON.stringify({status:'unavailable',code:e.message}))}}),getState,history,authenticate,mutate,health:()=>health};
 }
 module.exports={catalogFromSeed,profiles,permitted,canBalance,canTarget,normalizeBalance,normalizeTargets,latestBalances,decodeRows,applyEvent,createStore};
