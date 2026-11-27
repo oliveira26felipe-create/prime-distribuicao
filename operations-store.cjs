@@ -8,7 +8,7 @@ const uuid=s=>typeof s==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab]
 const qty=n=>Number.isSafeInteger(n)&&n>=0&&n<=1000000;
 const validDate=s=>typeof s==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(s)&&Number.isFinite(Date.parse(s+'T00:00:00Z'))&&new Date(s+'T00:00:00Z').toISOString().slice(0,10)===s;
 const err=(code,status=400)=>Object.assign(Error(code),{status});
-const empty=()=>({users:new Map(),balances:[],targets:new Map(),events:new Map()});
+const empty=()=>({users:new Map(),assignments:new Map(),balances:[],targets:new Map(),events:new Map()});
 function catalogFromSeed(seed){
  const stores=new Map(seed.lojas.map(l=>[String(l.id),{id:String(l.id),name:String(l.nome),city:String(l.cidade),branch:String(l.filial),promoter:String(l.promotor),coordinator:String(l.coord)}]));
  const products=new Map(seed.produtos.map(p=>[String(p.id),{id:String(p.id),name:String(p.nome),unitsPerBox:Number(p.unc)}]));
@@ -22,6 +22,7 @@ function profiles(c){
   if(s.promoter){if(m.has(s.promoter)&&m.get(s.promoter).role!=='promoter')throw Error('AMBIGUOUS_OPERATIONAL_PROFILE');m.set(s.promoter,{role:'promoter',name:s.promoter})}
  }return m;
 }
+function effectiveStore(state,store){return store&&state.assignments.has(store.id)?{...store,promoter:state.assignments.get(store.id)}:store;}
 function permitted(u,store){
  return !!u&&!!store&&(u.role==='admin'||u.role==='chief'||(u.role==='coordinator'&&store.coordinator===u.name)||(u.role==='promoter'&&store.promoter===u.name));
 }
@@ -65,7 +66,14 @@ function latestBalances(balances){
 function applyEvent(state,e,c,adminName){
  if(!e||!uuid(e.id)||!Number.isFinite(Date.parse(e.at))||typeof e.actor!=='string'||typeof e.actorName!=='string')throw err('INVALID_OPERATIONAL_EVENT');
  const json=JSON.stringify(e),prior=state.events.get(e.id);if(prior){if(prior!==json)throw err('OPERATIONAL_EVENT_CONFLICT',409);return}
- if(e.kind==='account'){
+ if(e.kind==='offboard'){
+  const a=state.users.get(e.data?.username);if(e.actor!==adminName||!a?.enabled||profiles(c).get(a.profile)?.role!=='promoter'||!uuid(e.data.version))throw err('INVALID_OFFBOARD');
+  state.users.set(a.username,{...a,enabled:false,version:e.data.version});
+  for(const l of c.stores.values())if(effectiveStore(state,l).promoter===a.profile)state.assignments.set(l.id,'');
+ }else if(e.kind==='assignment'){
+  const l=c.stores.get(e.data?.store),p=e.data?.promoter;if(e.actor!==adminName||!l||effectiveStore(state,l).promoter||profiles(c).get(p)?.role!=='promoter'||![...state.users.values()].some(a=>a.enabled&&a.profile===p))throw err('INVALID_ASSIGNMENT');
+  state.assignments.set(l.id,p);
+ }else if(e.kind==='account'){
   if(e.actor!==adminName)throw err('INVALID_ACCOUNT_ACTOR');const d=normalizeAccount(e.data,c,adminName);
   if(d.enabled&&[...state.users.values()].some(v=>v.enabled&&v.profile===d.profile&&v.username!==d.username))throw err('PROFILE_ALREADY_ASSIGNED',409);
   state.users.set(d.username,d);
@@ -73,12 +81,12 @@ function applyEvent(state,e,c,adminName){
   const u=e.actor===adminName?{role:'admin',name:'Administrador'}:state.users.get(e.actor)&&{...profiles(c).get(state.users.get(e.actor).profile),enabled:state.users.get(e.actor).enabled};
   if(!u||u.enabled===false||u.name!==e.actorName)throw err('INVALID_OPERATIONAL_ACTOR');
   if(e.kind==='balance'){
-   const d=normalizeBalance(e.data,c);if(!canBalance(u)||!permitted(u,c.stores.get(d.store)))throw err('FORBIDDEN',403);
+   const d=normalizeBalance(e.data,c);if(!canBalance(u)||!permitted(u,effectiveStore(state,c.stores.get(d.store))))throw err('FORBIDDEN',403);
    state.balances.push({id:e.id,at:e.at,author:e.actorName,...d});
   }else if(e.kind==='correction'){
    if(!canTarget(u))throw err('FORBIDDEN',403);
    const d=normalizeCorrection(e.data,state),b=state.balances.find(b=>b.id===d.balanceId);
-   if(!permitted(u,c.stores.get(b.store)))throw err('FORBIDDEN',403);
+   if(!permitted(u,effectiveStore(state,c.stores.get(b.store))))throw err('FORBIDDEN',403);
    b.cancelled={id:e.id,at:e.at,author:e.actorName,reason:d.reason};
   }else if(e.kind==='password'){
    const a=state.users.get(e.actor);
@@ -87,7 +95,7 @@ function applyEvent(state,e,c,adminName){
    if(d.username!==e.actor||d.profile!==a.profile||!d.enabled)throw err('INVALID_ACCOUNT_ACTOR');
    state.users.set(d.username,d);
   }else if(e.kind==='targets'){
-   const d=normalizeTargets(e.data,c);if(!canTarget(u)||!permitted(u,c.stores.get(d.store)))throw err('FORBIDDEN',403);
+   const d=normalizeTargets(e.data,c);if(!canTarget(u)||!permitted(u,effectiveStore(state,c.stores.get(d.store))))throw err('FORBIDDEN',403);
    const existing=state.targets.get(d.store)||{};for(const [id,v] of Object.entries(d.items)){if(v===null)delete existing[id];else existing[id]=v}state.targets.set(d.store,existing);
   }else throw err('INVALID_OPERATIONAL_KIND');
  }
@@ -127,9 +135,9 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
   catch(e){ready=false;throw err('OPERATIONAL_WRITE_UNCONFIRMED',503)}
  }
  const publicUser=u=>({username:u.username,profile:u.profile,enabled:u.enabled});
- async function getState(claims){return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);const stores=[...catalog.stores.values()].filter(l=>permitted(u,l));const ids=new Set(stores.map(l=>l.id)),balances=s.balances.filter(v=>ids.has(v.store));const latest=latestBalances(balances);return {user:u,canBalance:canBalance(u),canTarget:canTarget(u),stores,products:[...catalog.products.values()],latest,balances:balances.slice(-100).reverse(),balanceCount:balances.length,targets:Object.fromEntries([...s.targets].filter(([id])=>ids.has(id))),...(u.role==='admin'?{users:[...s.users.values()].map(publicUser),profiles:[...profiles(catalog).values()]}:{})}})}
+ async function getState(claims){return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);const stores=[...catalog.stores.values()].map(l=>effectiveStore(s,l)).filter(l=>permitted(u,l));const ids=new Set(stores.map(l=>l.id)),balances=s.balances.filter(v=>ids.has(v.store));const latest=latestBalances(balances);return {user:u,canBalance:canBalance(u),canTarget:canTarget(u),stores,products:[...catalog.products.values()],latest,balances:balances.slice(-100).reverse(),balanceCount:balances.length,targets:Object.fromEntries([...s.targets].filter(([id])=>ids.has(id))),...(u.role==='admin'?{users:[...s.users.values()].map(publicUser),profiles:[...profiles(catalog).values()]}:{})}})}
  async function history(claims,offset=0){
- return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);if(!Number.isSafeInteger(offset)||offset<0)throw err('INVALID_HISTORY_OFFSET');const rows=s.balances.filter(b=>permitted(u,catalog.stores.get(b.store))).slice().reverse();return {rows:rows.slice(offset,offset+100),total:rows.length,offset};});
+ return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);if(!Number.isSafeInteger(offset)||offset<0)throw err('INVALID_HISTORY_OFFSET');const rows=s.balances.filter(b=>permitted(u,effectiveStore(s,catalog.stores.get(b.store)))).slice().reverse();return {rows:rows.slice(offset,offset+100),total:rows.length,offset};});
  }
  async function authenticate(username,password){
   return exclusive(async()=>{const s=await load(),a=s.users.get(username);
@@ -144,12 +152,12 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
   const old=s.events.get(input.id);
   if(old){const e=JSON.parse(old);if(e.actor!==u.username||e.kind!==input.kind)throw err('OPERATIONAL_EVENT_CONFLICT',409);if(e.kind==='balance'||e.kind==='targets'){const d=e.kind==='balance'?normalizeBalance(input.data,catalog):normalizeTargets(input.data,catalog);if(JSON.stringify(d)!==JSON.stringify(e.data))throw err('OPERATIONAL_EVENT_CONFLICT',409)}else if(e.kind==='correction'){if(String(input.data?.balanceId)!==e.data.balanceId||String(input.data?.reason??'').trim()!==e.data.reason)throw err('OPERATIONAL_EVENT_CONFLICT',409)}else throw err('ACCOUNT_REQUEST_ALREADY_RECORDED',409);return {ok:true,duplicate:true,id:e.id,at:e.at}}
   let data;
-  if(input.kind==='balance'){data=normalizeBalance(input.data,catalog);if(!canBalance(u)||!permitted(u,catalog.stores.get(data.store)))throw err('FORBIDDEN',403)}
-  else if(input.kind==='targets'){data=normalizeTargets(input.data,catalog);if(!canTarget(u)||!permitted(u,catalog.stores.get(data.store)))throw err('FORBIDDEN',403)}
+  if(input.kind==='balance'){data=normalizeBalance(input.data,catalog);if(!canBalance(u)||!permitted(u,effectiveStore(s,catalog.stores.get(data.store))))throw err('FORBIDDEN',403)}
+  else if(input.kind==='targets'){data=normalizeTargets(input.data,catalog);if(!canTarget(u)||!permitted(u,effectiveStore(s,catalog.stores.get(data.store))))throw err('FORBIDDEN',403)}
   else if(input.kind==='correction'){
    if(!canTarget(u))throw err('FORBIDDEN',403);
    data=normalizeCorrection(input.data,s);
-   if(!permitted(u,catalog.stores.get(s.balances.find(b=>b.id===data.balanceId).store)))throw err('FORBIDDEN',403);
+   if(!permitted(u,effectiveStore(s,catalog.stores.get(s.balances.find(b=>b.id===data.balanceId).store))))throw err('FORBIDDEN',403);
   }
   else if(input.kind==='password'){
    const a=s.users.get(u.username),d=input.data||{};
@@ -158,7 +166,15 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
    const salt=crypto.randomBytes(16).toString('hex');
    data=normalizeAccount({...a,version:crypto.randomUUID(),salt,hash:crypto.scryptSync(d.password,salt,32).toString('hex')},catalog,adminName);
   }
-  else if(input.kind==='account'){
+  else if(input.kind==='offboard'){
+   if(u.role!=='admin')throw err('FORBIDDEN',403);const a=s.users.get(input.data?.username);
+   if(!a?.enabled||profiles(catalog).get(a.profile)?.role!=='promoter')throw err('INVALID_OFFBOARD');
+   data={username:a.username,version:crypto.randomUUID()};
+  }else if(input.kind==='assignment'){
+   if(u.role!=='admin')throw err('FORBIDDEN',403);const l=catalog.stores.get(input.data?.store),p=input.data?.promoter;
+   if(!l||effectiveStore(s,l).promoter||profiles(catalog).get(p)?.role!=='promoter'||![...s.users.values()].some(a=>a.enabled&&a.profile===p))throw err('INVALID_ASSIGNMENT');
+   data={store:l.id,promoter:p};
+  }else if(input.kind==='account'){
    if(u.role!=='admin')throw err('FORBIDDEN',403);
    const d=input.data||{},username=String(d.username??'').trim().toLowerCase(),prior=s.users.get(username);
    if(typeof d.enabled!=='boolean')throw err('INVALID_ACCOUNT');
