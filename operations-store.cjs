@@ -51,6 +51,17 @@ function normalizeAccount(d,c,adminName){
  if(!/^[a-z0-9._-]{3,64}$/.test(username)||username===adminName||!profile||typeof d.enabled!=='boolean'||!uuid(d.version)||!(/^[0-9a-f]{32}$/.test(d.salt||''))||!(/^[0-9a-f]{64}$/.test(d.hash||'')))throw err('INVALID_ACCOUNT');
  return {username,profile:d.profile,enabled:d.enabled,version:d.version,salt:d.salt,hash:d.hash};
 }
+function normalizeCorrection(data,state){
+ const id=String(data?.balanceId??''),reason=String(data?.reason??'').trim();
+ const prior=state.balances.find(b=>b.id===id);
+ if(!prior||prior.cancelled||reason.length<5||reason.length>500)throw err('INVALID_CORRECTION');
+ return {balanceId:id,reason};
+}
+function latestBalances(balances){
+ const latest={};
+ for(const b of balances){if(b.cancelled)continue;const m=latest[b.store]??={};for(const [id,v] of Object.entries(b.items))m[id]={...v,at:b.at,author:b.author};}
+ return latest;
+}
 function applyEvent(state,e,c,adminName){
  if(!e||!uuid(e.id)||!Number.isFinite(Date.parse(e.at))||typeof e.actor!=='string'||typeof e.actorName!=='string')throw err('INVALID_OPERATIONAL_EVENT');
  const json=JSON.stringify(e),prior=state.events.get(e.id);if(prior){if(prior!==json)throw err('OPERATIONAL_EVENT_CONFLICT',409);return}
@@ -64,6 +75,17 @@ function applyEvent(state,e,c,adminName){
   if(e.kind==='balance'){
    const d=normalizeBalance(e.data,c);if(!canBalance(u)||!permitted(u,c.stores.get(d.store)))throw err('FORBIDDEN',403);
    state.balances.push({id:e.id,at:e.at,author:e.actorName,...d});
+  }else if(e.kind==='correction'){
+   if(!canTarget(u))throw err('FORBIDDEN',403);
+   const d=normalizeCorrection(e.data,state),b=state.balances.find(b=>b.id===d.balanceId);
+   if(!permitted(u,c.stores.get(b.store)))throw err('FORBIDDEN',403);
+   b.cancelled={id:e.id,at:e.at,author:e.actorName,reason:d.reason};
+  }else if(e.kind==='password'){
+   const a=state.users.get(e.actor);
+   if(!a||!a.enabled)throw err('INVALID_ACCOUNT_ACTOR');
+   const d=normalizeAccount(e.data,c,adminName);
+   if(d.username!==e.actor||d.profile!==a.profile||!d.enabled)throw err('INVALID_ACCOUNT_ACTOR');
+   state.users.set(d.username,d);
   }else if(e.kind==='targets'){
    const d=normalizeTargets(e.data,c);if(!canTarget(u)||!permitted(u,c.stores.get(d.store)))throw err('FORBIDDEN',403);
    const existing=state.targets.get(d.store)||{};for(const [id,v] of Object.entries(d.items)){if(v===null)delete existing[id];else existing[id]=v}state.targets.set(d.store,existing);
@@ -84,10 +106,10 @@ function decodeRows(rows,c,adminName){
 function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=console.log}){
  let state=empty(),ready=false,loadedAt=0,queue=Promise.resolve(),health={configured:!!id,status:'pending'};
  const exclusive=fn=>{const p=queue.then(fn);queue=p.catch(()=>{});return p};
- const request=async()=>{if(!goodId(id)||excludedIds.has(id))throw err('INVALID_OPERATIONAL_DESTINATION',503);const bearer=await token(),base='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(id);return async(suffix,method='GET',body)=>{const r=await fetchFn(base+suffix,{method,headers:{Authorization:'Bearer '+bearer,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(25000),redirect:'error'});if(!r.ok)throw err('OPERATIONAL_HTTP_'+r.status,503);return r.json()}};
+ const request=async()=>{if(!goodId(id)||excludedIds.has(id))throw err('INVALID_OPERATIONAL_DESTINATION',503);const bearer=await token(),base='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(id);return async(suffix,method='GET',body)=>{const opts={method,headers:{Authorization:'Bearer '+bearer,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(25000),redirect:'error'};let r=await fetchFn(base+suffix,opts);if(method==='GET'&&fetchFn===fetch&&[429,502,503,504].includes(r.status)){await new Promise(resolve=>setTimeout(resolve,1500+Math.random()*1500));r=await fetchFn(base+suffix,{...opts,signal:AbortSignal.timeout(25000)})}if(!r.ok)throw err('OPERATIONAL_HTTP_'+r.status,503);return r.json()}};
  const range=encodeURIComponent("'Operacional'!A1:D");
  async function load(force=false){
-  if(ready&&!force&&Date.now()-loadedAt<10000)return state;
+  if(ready&&!force&&Date.now()-loadedAt<30000)return state;
   try{
    const get=await request();
    if(!ready){const meta=await get('?fields=properties(title),sheets(properties(title))');if(norm(meta.properties?.title)!=='prime - historico americanas')throw err('INVALID_OPERATIONAL_DESTINATION',503);if(!meta.sheets?.some(s=>s.properties?.title==='Operacional'))await get(':batchUpdate','POST',{requests:[{addSheet:{properties:{title:'Operacional'}}}]})}
@@ -105,7 +127,10 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
   catch(e){ready=false;throw err('OPERATIONAL_WRITE_UNCONFIRMED',503)}
  }
  const publicUser=u=>({username:u.username,profile:u.profile,enabled:u.enabled});
- async function getState(claims){return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);const stores=[...catalog.stores.values()].filter(l=>permitted(u,l));const ids=new Set(stores.map(l=>l.id)),balances=s.balances.filter(v=>ids.has(v.store));const latest={};for(const b of balances){const m=latest[b.store]??={};for(const [id,v] of Object.entries(b.items))m[id]={...v,at:b.at,author:b.author}}return {user:u,canBalance:canBalance(u),canTarget:canTarget(u),stores,products:[...catalog.products.values()],latest,balances:balances.slice(-500).reverse(),targets:Object.fromEntries([...s.targets].filter(([id])=>ids.has(id))),...(u.role==='admin'?{users:[...s.users.values()].map(publicUser),profiles:[...profiles(catalog).values()]}:{})}})}
+ async function getState(claims){return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);const stores=[...catalog.stores.values()].filter(l=>permitted(u,l));const ids=new Set(stores.map(l=>l.id)),balances=s.balances.filter(v=>ids.has(v.store));const latest=latestBalances(balances);return {user:u,canBalance:canBalance(u),canTarget:canTarget(u),stores,products:[...catalog.products.values()],latest,balances:balances.slice(-100).reverse(),balanceCount:balances.length,targets:Object.fromEntries([...s.targets].filter(([id])=>ids.has(id))),...(u.role==='admin'?{users:[...s.users.values()].map(publicUser),profiles:[...profiles(catalog).values()]}:{})}})}
+ async function history(claims,offset=0){
+ return exclusive(async()=>{const s=await load(),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);if(!Number.isSafeInteger(offset)||offset<0)throw err('INVALID_HISTORY_OFFSET');const rows=s.balances.filter(b=>permitted(u,catalog.stores.get(b.store))).slice().reverse();return {rows:rows.slice(offset,offset+100),total:rows.length,offset};});
+ }
  async function authenticate(username,password){
   return exclusive(async()=>{const s=await load(),a=s.users.get(username);
    const salt=a?.salt||'0'.repeat(32),expected=a?.hash||'0'.repeat(64);
@@ -117,10 +142,22 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
  async function mutate(claims,input){return exclusive(async()=>{
   const s=await load(true),u=principal(s,claims);if(!u)throw err('AUTH_REQUIRED',401);if(!uuid(input?.id))throw err('INVALID_REQUEST_ID');
   const old=s.events.get(input.id);
-  if(old){const e=JSON.parse(old);if(e.actor!==u.username||e.kind!==input.kind)throw err('OPERATIONAL_EVENT_CONFLICT',409);if(e.kind==='balance'||e.kind==='targets'){const d=e.kind==='balance'?normalizeBalance(input.data,catalog):normalizeTargets(input.data,catalog);if(JSON.stringify(d)!==JSON.stringify(e.data))throw err('OPERATIONAL_EVENT_CONFLICT',409)}else throw err('ACCOUNT_REQUEST_ALREADY_RECORDED',409);return {ok:true,duplicate:true,id:e.id,at:e.at}}
+  if(old){const e=JSON.parse(old);if(e.actor!==u.username||e.kind!==input.kind)throw err('OPERATIONAL_EVENT_CONFLICT',409);if(e.kind==='balance'||e.kind==='targets'){const d=e.kind==='balance'?normalizeBalance(input.data,catalog):normalizeTargets(input.data,catalog);if(JSON.stringify(d)!==JSON.stringify(e.data))throw err('OPERATIONAL_EVENT_CONFLICT',409)}else if(e.kind==='correction'){if(String(input.data?.balanceId)!==e.data.balanceId||String(input.data?.reason??'').trim()!==e.data.reason)throw err('OPERATIONAL_EVENT_CONFLICT',409)}else throw err('ACCOUNT_REQUEST_ALREADY_RECORDED',409);return {ok:true,duplicate:true,id:e.id,at:e.at}}
   let data;
   if(input.kind==='balance'){data=normalizeBalance(input.data,catalog);if(!canBalance(u)||!permitted(u,catalog.stores.get(data.store)))throw err('FORBIDDEN',403)}
   else if(input.kind==='targets'){data=normalizeTargets(input.data,catalog);if(!canTarget(u)||!permitted(u,catalog.stores.get(data.store)))throw err('FORBIDDEN',403)}
+  else if(input.kind==='correction'){
+   if(!canTarget(u))throw err('FORBIDDEN',403);
+   data=normalizeCorrection(input.data,s);
+   if(!permitted(u,catalog.stores.get(s.balances.find(b=>b.id===data.balanceId).store)))throw err('FORBIDDEN',403);
+  }
+  else if(input.kind==='password'){
+   const a=s.users.get(u.username),d=input.data||{};
+   if(!a||typeof d.current!=='string'||d.current.length>128||!crypto.timingSafeEqual(Buffer.from(a.hash,'hex'),crypto.scryptSync(d.current,a.salt,32)))throw err('CURRENT_PASSWORD_INVALID',403);
+   if(typeof d.password!=='string'||d.password.length<12||d.password.length>128||d.current===d.password)throw err('PASSWORD_LENGTH');
+   const salt=crypto.randomBytes(16).toString('hex');
+   data=normalizeAccount({...a,version:crypto.randomUUID(),salt,hash:crypto.scryptSync(d.password,salt,32).toString('hex')},catalog,adminName);
+  }
   else if(input.kind==='account'){
    if(u.role!=='admin')throw err('FORBIDDEN',403);
    const d=input.data||{},username=String(d.username??'').trim().toLowerCase(),prior=s.users.get(username);
@@ -162,6 +199,6 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
   log((rotate?'[operations-rotation] ':'[operations-provision] ')+JSON.stringify({status:checked.length===planned.length?'ok':'existing_accounts_not_changed',changed:events.length,existing,verified:checked.length,total:planned.length}));
  }
 
- return {init:()=>exclusive(async()=>{try{await load();if(process.env.PRIME_ROTATE_PASSWORD)await provision(process.env.PRIME_ROTATE_PASSWORD,true);else if(process.env.PRIME_PROVISION_PASSWORD)await provision(process.env.PRIME_PROVISION_PASSWORD);log('[operations] '+JSON.stringify({status:'ok',balances:state.balances.length,accounts:health.accounts}))}catch(e){log('[operations] '+JSON.stringify({status:'unavailable',code:e.message}))}}),getState,authenticate,mutate,health:()=>health};
+ return {init:()=>exclusive(async()=>{try{await load();if(process.env.PRIME_ROTATE_PASSWORD)await provision(process.env.PRIME_ROTATE_PASSWORD,true);else if(process.env.PRIME_PROVISION_PASSWORD)await provision(process.env.PRIME_PROVISION_PASSWORD);log('[operations] '+JSON.stringify({status:'ok',balances:state.balances.length,accounts:health.accounts}))}catch(e){log('[operations] '+JSON.stringify({status:'unavailable',code:e.message}))}}),getState,history,authenticate,mutate,health:()=>health};
 }
-module.exports={catalogFromSeed,profiles,permitted,canBalance,canTarget,normalizeBalance,normalizeTargets,decodeRows,applyEvent,createStore};
+module.exports={catalogFromSeed,profiles,permitted,canBalance,canTarget,normalizeBalance,normalizeTargets,latestBalances,decodeRows,applyEvent,createStore};
