@@ -19,7 +19,7 @@ const installJs="(()=>{let promptEvent=null;const standalone=()=>matchMedia('(di
 const withPwa=source=>source.replace(/<title>/i,pwaHead+'<title>');
 const publicAssets={'/app.webmanifest':['application/manifest+json; charset=utf-8',manifest],'/app-icon-192.png':['image/png',icon192],'/app-icon-512.svg':['image/svg+xml',icon512],'/app-sw.js':['application/javascript; charset=utf-8',worker],'/install.js':['application/javascript; charset=utf-8',installJs]};
 
-const expiryHtml=source=>{const changes=[["pages.push(['estoque','Estoque']);","pages.push(['estoque','Estoque'],['validade','Validades'],['oportunidades','Oportunidades de mix']);"],["if(page==='historico')h+=historyPanel(a);","if(page==='historico')h+=historyPanel(a);if(page==='validade')h+=primeExpiryPanel(a);if(page==='oportunidades')h+=primeMixPanel(a,picker,search,table,tr);"],["loginScreen();</script></html>",'loginScreen();</script><script src="/validade.js"></script></html>']];for(const [a,b] of changes){if(!source.includes(a))throw Error('Preview validity integration mismatch');source=source.replace(a,b)}return source};
+const expiryHtml=source=>{const changes=[["pages.push(['estoque','Estoque']);","pages.push(['estoque','Estoque'],['validade','Validades'],['oportunidades','Oportunidades de mix'],['estoqueprime','Estoque Prime']);"],["if(page==='historico')h+=historyPanel(a);","if(page==='historico')h+=historyPanel(a);if(page==='validade')h+=primeExpiryPanel(a);if(page==='oportunidades')h+=primeMixPanel(a,picker,search,table,tr);if(page==='estoqueprime')h+=primeStockPanel(a,search,table);"],["loginScreen();</script></html>",'loginScreen();</script><script src="/validade.js"></script></html>']];for(const [a,b] of changes){if(!source.includes(a))throw Error('Preview validity integration mismatch');source=source.replace(a,b)}return source};
 const fs=require('node:fs'),pathUtil=require('node:path');
 const updateJs=fs.readFileSync(pathUtil.join(__dirname,'session-update.js'),'utf8');
 const commercialJs=fs.readFileSync(pathUtil.join(__dirname,'commercial-summary.js'),'utf8');
@@ -87,6 +87,6 @@ if(!valid)return send(res,200,withPwa(page()));
 // Limitar a espera evita travar a navegação durante uma indisponibilidade do Google.
 let timeout;
 try{await Promise.race([Promise.allSettled([sheetsSync.refresh(),stockSync.refresh()]),new Promise(resolve=>{timeout=setTimeout(resolve,7000);timeout.unref?.()})])}finally{clearTimeout(timeout)}
-if(path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:liveVersion()}))}
+if(path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:liveVersion(),stock:stockSync.get()}))}
 return send(res,200,withPwa(liveHtml()));
 }).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start();stockSync.start()});
