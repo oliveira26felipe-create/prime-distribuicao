@@ -58,7 +58,6 @@ res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-
 const path=req.url.split('?')[0];
 if((req.method==='GET'||req.method==='HEAD')&&Object.hasOwn(publicAssets,path)){const [type,data]=publicAssets[path];res.writeHead(200,{'Content-Type':type});return res.end(req.method==='HEAD'?undefined:data)}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/validade.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:require('node:fs').readFileSync(require('node:path').join(__dirname,'validade.js')))}
-if((req.method==='GET'||req.method==='HEAD')&&path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:liveVersion()}))}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/session-update.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:updateJs)}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/commercial-summary.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:commercialJs)}
 if((req.method==='GET'||req.method==='HEAD')&&path==='/prime-polish.js'){res.writeHead(200,{'Content-Type':'application/javascript; charset=utf-8'});return res.end(req.method==='HEAD'?undefined:polishJs)}
@@ -79,9 +78,15 @@ if(req.method==='POST'&&path==='/entrar'){
 }
 if(req.method!=='GET'&&req.method!=='HEAD'){res.writeHead(405);return res.end()}
 if(path==='/sair-previa'){res.writeHead(303,{'Location':'/','Set-Cookie':'__Host-prime_preview=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0'});return res.end()}
-if(path!=='/'&&path!=='/index.html'){res.writeHead(404);return res.end('Not found')}
+if(path!=='/'&&path!=='/index.html'&&path!=='/versao'){res.writeHead(404);return res.end('Not found')}
 const cookie=(req.headers.cookie||'').split(';').map(v=>v.trim()).find(v=>v.startsWith('__Host-prime_preview='));
 let valid=false;if(cookie){const val=cookie.slice('__Host-prime_preview='.length).split('.');if(val.length===3&&Number(val[0])>Date.now()&&safe(val[2],sign(val[0]+'.'+val[1])))valid=true}
+if(path==='/versao'&&!valid){res.writeHead(401,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({error:'AUTH_REQUIRED'}))}
 if(!valid)return send(res,200,withPwa(page()));
+// A consulta de versão e a abertura autenticada também verificam fontes vencidas.
+// Limitar a espera evita travar a navegação durante uma indisponibilidade do Google.
+let timeout;
+try{await Promise.race([Promise.allSettled([sheetsSync.refresh(),stockSync.refresh()]),new Promise(resolve=>{timeout=setTimeout(resolve,7000);timeout.unref?.()})])}finally{clearTimeout(timeout)}
+if(path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:liveVersion()}))}
 return send(res,200,withPwa(liveHtml()));
 }).listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start();stockSync.start()});
