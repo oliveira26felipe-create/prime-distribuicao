@@ -2,22 +2,29 @@
 const fs=require('node:fs');
 const crypto=require('node:crypto');
 const tokenUrl='https://oauth2.googleapis.com/token';
-let tokenCache=null,tokenFlight=null;
+let tokenCache=null,tokenFlight=null,writeCache=null,writeFlight=null;
 async function accessToken(){
   if(tokenCache&&tokenCache.until>Date.now())return tokenCache.value;
   if(tokenFlight)return tokenFlight;
-  tokenFlight=requestToken();try{return await tokenFlight}finally{tokenFlight=null}
+  tokenFlight=requestToken('https://www.googleapis.com/auth/spreadsheets.readonly').then(v=>{tokenCache=v;return v.value});
+  try{return await tokenFlight}finally{tokenFlight=null}
 }
-async function requestToken(){
+async function accessWriteToken(){
+  if(writeCache&&writeCache.until>Date.now())return writeCache.value;
+  if(writeFlight)return writeFlight;
+  writeFlight=requestToken('https://www.googleapis.com/auth/spreadsheets').then(v=>{writeCache=v;return v.value});
+  try{return await writeFlight}finally{writeFlight=null}
+}
+async function requestToken(scope){
   let creds;
   try{creds=JSON.parse(fs.readFileSync('/etc/secrets/google-sheets.json','utf8'))}catch(e){throw new Error(e.code==='ENOENT'?'SECRET_FILE_MISSING':'SECRET_FILE_INVALID')}
   if(creds.type!=='service_account'||typeof creds.client_email!=='string'||typeof creds.private_key!=='string')throw new Error('INVALID_SERVICE_ACCOUNT');
   const enc=x=>Buffer.from(JSON.stringify(x)).toString('base64url'),now=Math.floor(Date.now()/1000);
-  const unsigned=enc({alg:'RS256',typ:'JWT'})+'.'+enc({iss:creds.client_email,scope:'https://www.googleapis.com/auth/spreadsheets.readonly',aud:tokenUrl,iat:now,exp:now+3600});
+  const unsigned=enc({alg:'RS256',typ:'JWT'})+'.'+enc({iss:creds.client_email,scope,aud:tokenUrl,iat:now,exp:now+3600});
   let assertion;try{assertion=unsigned+'.'+crypto.sign('RSA-SHA256',Buffer.from(unsigned),creds.private_key).toString('base64url')}catch{throw new Error('INVALID_PRIVATE_KEY')}
   const resp=await fetch(tokenUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion}),signal:AbortSignal.timeout(15000),redirect:'error'});
   if(!resp.ok)throw new Error('TOKEN_HTTP_'+resp.status);
-  const token=await resp.json();if(typeof token.access_token!=='string')throw new Error('INVALID_TOKEN_RESPONSE');tokenCache={value:token.access_token,until:Date.now()+Math.max(0,Math.min(3300,(Number(token.expires_in)||3600)-120))*1000};return token.access_token;
+  const token=await resp.json();if(typeof token.access_token!=='string')throw new Error('INVALID_TOKEN_RESPONSE');return {value:token.access_token,until:Date.now()+Math.max(0,Math.min(3300,(Number(token.expires_in)||3600)-120))*1000};
 }
 const monthNames=['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 function aggregate(rows,baseline){
@@ -99,7 +106,7 @@ function makeSync(baseline,config={}){
         const next={...current,month};
         if(sales.status==='fulfilled'){
           const r=sales.value,prevGoals=new Map(current.rows.map(([id,m])=>[id,m]));
-          next.rows=r.rows.map(([id,m,actual])=>[id,prevGoals.get(id)??m,actual]);next.mixByStore=r.mixByStore;next.soldByStore=r.soldByStore;next.matchedIds=r.matchedIds;next.lineCount=r.lines;next.live=true;next.mixStatus='ok';next.source='Flash de Vendas - aba Dados';
+          next.rows=r.rows.map(([id,m,actual])=>[id,prevGoals.get(id)??m,actual]);next.mixByStore=r.mixByStore;next.soldByStore=r.soldByStore;next.matchedIds=r.matchedIds;next.lineCount=r.lines;next.live=true;next.archived=false;next.mixStatus='ok';next.source='Flash de Vendas - aba Dados';
           const changed=JSON.stringify([next.rows.map(([id,m,a])=>[id,a]),r.soldByStore,r.matchedIds,r.lines])!==JSON.stringify([current.rows.map(([id,m,a])=>[id,a]),current.soldByStore,current.matchedIds,current.lineCount]);
           if(changed||!current.syncedAt)next.syncedAt=new Date().toISOString();
           mark('sales','ok',{month,lines:r.lines,stores:r.stores,totalCents:r.rows.reduce((n,x)=>n+x[2],0),missingStores:baseline.rows.length-r.stores});
@@ -125,7 +132,7 @@ function makeSync(baseline,config={}){
     })();
     return inflight;
   };
-  return {get:()=>current,health:()=>health,refresh,start(){refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
+  return {get:()=>current,health:()=>health,restore(snapshot){if(!current.live&&snapshot?.month===month){current={...snapshot,live:true,archived:true,mixStatus:'stale',goalStatus:'stale',storeGoalStatus:'stale',source:'Histórico permanente'};for(const k of ['sales','official','individual'])health[k]={status:'stale',lastSuccess:snapshot.capturedAt}}},refresh,start(){refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
 function makeMonthSync(baseline){
   const readers=new Map([[baseline.month,makeSync(baseline)]]),ids=new Set([process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID].filter(Boolean));
@@ -146,4 +153,4 @@ function makeMonthSync(baseline){
   const health=()=>({...readers.get(active()).health(),month:active(),calendarMonth:monthNow(),configuredMonths:[...readers.keys()].sort(),registryError,months:Object.fromEntries([...readers].map(([m,r])=>[m,r.health()]))});
   return {get,health,refresh,start(){refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
-module.exports={makeSync,makeMonthSync,aggregate,readOfficialGoal,readStoreGoals,accessToken,validateCoverage};
+module.exports={makeSync,makeMonthSync,aggregate,readOfficialGoal,readStoreGoals,accessToken,accessWriteToken,validateCoverage};
