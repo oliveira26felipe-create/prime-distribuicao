@@ -17,6 +17,8 @@ function originalLayout({template,seed,commercialTag,view,stockJs,mixJs,integrat
  h=replaceOnce(h,'Coordenador • acesso a todas as lojas Americanas das duas filiais.','Coordenador • acesso às lojas atribuídas ao seu perfil.');
  h=replaceOnce(h,"['produtos','Produtos'],['importar','Importação'],['metas','Metas comerciais'],['usuarios','Usuários']","['produtos','Produtos'],['metas','Metas comerciais'],['usuarios','Usuários']");
  h=replaceOnce(h,'<script src="/session-update.js"></script>','<script src="/operacional/original.js"></script>');
+ h=replaceOnce(h,"onchange=\"filial=this.value;store='';draft={};order={};render()\"","onchange=\"primeSelectBranch(this.value)\"");
+ h=replaceOnce(h,"onchange=\"store=this.value;draft={};order={};render()\"","onchange=\"primeSelectStore(this.value)\"");
  h=replaceOnce(h,commercialTag,'<script>window.PRIME_OPERATIONAL='+encode(view)+';window.PRIME_COMMERCIAL_IMPORT='+encode(view.commercial)+';window.PRIME_STOCK_IMPORT='+encode({branches:view.stock||{}})+';window.PRIME_SYNC_HEALTH='+encode(view.health||{})+';</script><script src="/commercial-summary.js"></script><script>'+stockJs+'</script><script>'+mixJs+'</script><script>'+integrationJs+'</script>');
  h=h.replace(/<title>[^<]*<\/title>/i,'<title>Prime Distribuição | Gestão Americanas</title>').replace('content="'+release+'"','content="'+view.version+'"');
  // Do not expose a demo profile selector or allow it to run in the real layout.
