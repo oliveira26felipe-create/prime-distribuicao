@@ -49,7 +49,7 @@ function makeOperations({seed,adminName,verifyAdmin,sign,safe,archiveId,excluded
  }
  async function viewFor(c){
   const v=await store.getState(c),branches=new Set(v.stores.map(s=>s.branch)),stock=getStock()?.branches||{},supply=getSupply?.()||null;
-  const data={...v,commercial:scopedCommercial(getCommercial(),v.stores),stock:Object.fromEntries(Object.entries(stock).filter(([b])=>branches.has(b))),supply:supply?{status:supply.status,prices:Object.fromEntries(Object.entries(supply.prices||{}).filter(([b])=>branches.has(b))),pending:Object.fromEntries(Object.entries(supply.pending||{}).filter(([id])=>v.stores.some(s=>s.id===id)))}:null};
+  const data={...v,commercial:scopedCommercial(getCommercial(),v.stores),stock:Object.fromEntries(Object.entries(stock).filter(([b])=>branches.has(b))),supply:supply?{status:supply.status,positions:supply.positions,prices:Object.fromEntries(Object.entries(supply.prices||{}).filter(([b])=>branches.has(b))),pending:Object.fromEntries(Object.entries(supply.pending||{}).filter(([id])=>v.stores.some(s=>s.id===id)))}:null};
   const version=crypto.createHash('sha256').update(release).update(JSON.stringify(data)).digest('hex').slice(0,24);
   return {...data,version,health:v.user.role==='admin'?(getHealth?.()||{}):{}};
  }
@@ -73,6 +73,11 @@ function makeOperations({seed,adminName,verifyAdmin,sign,safe,archiveId,excluded
    if((url==='/operacional'||url==='/operacional/login')&&req.method==='GET'){
     if(!c)return loginPage(res);
     try{const v=await viewFor(c);return html(res,200,renderApp?renderApp(v):app)}catch(e){if(e.status===401){res.setHeader('Set-Cookie',COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0');return loginPage(res,401,'Sessão expirada. Entre novamente.')}throw e}
+   }
+   if(url==='/operacional/history'&&req.method==='GET'){
+    if(!c)return json(res,401,{error:'AUTH_REQUIRED'});
+    const offset=Number(new URL(req.url,'http://localhost').searchParams.get('offset')||0);
+    return json(res,200,await store.history(c,offset));
    }
    if(url==='/operacional/api'&&req.method==='GET'){
     if(!c)return json(res,401,{error:'AUTH_REQUIRED'});
