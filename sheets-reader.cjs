@@ -88,7 +88,7 @@ function makeSync(baseline,config={}){
   const failure=(k,e)=>{const status=health[k].lastSuccess?'stale':'unavailable';mark(k,status,{error:errorCode(e)});return status};
   const refresh=async(force=false)=>{
     if(inflight)return inflight;
-    if(Date.now()-checkedAt<(force===true?30000:300000))return current;
+    if((force!==true||fetchFn===fetch)&&Date.now()-checkedAt<(force===true?30000:300000))return current;
     checkedAt=Date.now();
     inflight=(async()=>{
       try{
