@@ -96,6 +96,17 @@ async function run(){
  check(parseClosures('{}','2026-12',known).size===0,'virada de mês não encerra automaticamente');
  check(parseClosures(JSON.stringify({'2026-11':encoded[2]}),'2026-12',known).get('2026-11')===encoded[2],'encerramento exige hash de snapshot');
  throws(()=>parseClosures(JSON.stringify({'2026-12':encoded[2]}),'2026-12',known),/INVALID_CLOSURE_REGISTRY/);
+
+ const farol=require('./farol-reader.cjs');
+ check(farol.dateMonth('27/11/2026')==='2026-11'&&farol.dateMonth('31/02/2026')===null,'competência da data de saída validada');
+ const farolRow=(date,value,ret=0)=>['1','5906','Produto',value,0,0,0,0,ret,0,'01/11/2026',date];
+ check(farol.normalizeFarolRows([farolRow('27/11/2026',12),farolRow('01/12/2026',100)],new Set(['1']),'2026-11').length===1,'Farol não mistura competências');
+ throws(()=>farol.normalizeFarolRows([farolRow('27/11/2026',12,2)],new Set(['1']),'2026-11'),/FAROL_RETURN_RULE_UNCONFIRMED/);
+ const metaRows=Array.from({length:4},()=>[]);
+ metaRows[0][0]='CÓD';metaRows[0][1]='VENDEDOR';metaRows[0][46]='GERAL';metaRows[1][46]='FATURAMENTO';metaRows[2][47]='Meta';metaRows[3][0]=1001;metaRows[3][1]='Americanas';metaRows[3][47]=123.45;
+ check(farol.readMetaRows(metaRows)===12345,'meta geral AV na linha Americanas');
+ throws(()=>farol.readMetaRows([...metaRows,metaRows[3]]),/AMERICANAS_GOAL_ROW_MISSING_OR_DUPLICATE/);
+ await assert.rejects(()=>farol.readMetaFlash(async()=>{throw Error('unexpected network')},'test','2026-11','2026-12'),/META_FLASH_PERIOD_UNCONFIRMED/);checks++;
  return checks;
 }
 if(require.main===module)run().then(checks=>console.log('[self-test] '+JSON.stringify({status:'ok',checks}))).catch(e=>{console.error('[self-test] failed',e.message);process.exitCode=1});
