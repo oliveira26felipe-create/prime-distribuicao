@@ -27,10 +27,11 @@ function makeOperations({seed,adminName,verifyAdmin,sign,safe,archiveId,excluded
  function sessionCookie(c){const encoded=Buffer.from(JSON.stringify({...c,exp:Date.now()+maxAge*1000})).toString('base64url');return COOKIE+'='+encoded+'.'+sign('operations:'+encoded)+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age='+maxAge}
  async function readBody(req,limit){let body='';for await(const chunk of req){body+=chunk;if(Buffer.byteLength(body)>limit)throw Object.assign(Error('BODY_TOO_LARGE'),{status:413})}return body}
  const sameOrigin=req=>req.headers.origin===publicOrigin;
- function loginPage(res,status=200,error=''){
+ function loginPage(res,status=200,error='',clearSession=false){
   const nonce=String(Date.now()+600000)+'.'+crypto.randomBytes(24).toString('hex'),csrf=nonce+'.'+sign('login:'+nonce);
   res.setHeader('Referrer-Policy','same-origin');
-  res.setHeader('Set-Cookie',LOGIN_COOKIE+'='+csrf+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600');
+  const csrfCookie=LOGIN_COOKIE+'='+csrf+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600';
+  res.setHeader('Set-Cookie',clearSession?[csrfCookie,COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0']:csrfCookie);
   return html(res,status,renderLogin?renderLogin(error,csrf):login(error,csrf));
  }
  function validLogin(req,form){
@@ -72,7 +73,7 @@ function makeOperations({seed,adminName,verifyAdmin,sign,safe,archiveId,excluded
    const c=claims(req);
    if((url==='/operacional'||url==='/operacional/login')&&req.method==='GET'){
     if(!c)return loginPage(res);
-    try{const v=await viewFor(c);return html(res,200,renderApp?renderApp(v):app)}catch(e){if(e.status===401){res.setHeader('Set-Cookie',COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0');return loginPage(res,401,'Sessão expirada. Entre novamente.')}throw e}
+    try{const v=await viewFor(c);return html(res,200,renderApp?renderApp(v):app)}catch(e){if(e.status===401){return loginPage(res,200,'Sessão expirada. Entre novamente.',true)}throw e}
    }
    if(url==='/operacional/history'&&req.method==='GET'){
     if(!c)return json(res,401,{error:'AUTH_REQUIRED'});
