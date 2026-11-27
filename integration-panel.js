@@ -3,7 +3,7 @@
 let h=window.PRIME_SYNC_HEALTH||{},running=false;
 const fmt=t=>t?new Date(t).toLocaleString('pt-BR',{timeZone:'America/Bahia'}):'—';
 const money=n=>Number.isSafeInteger(n)?brl(n):'—';
-const age=p=>p?Date.now()-Date.parse(p+'-03:00'):Infinity;
+const age=p=>{const t=Date.parse(p?(p.includes('T')?p:p+'T00:00:00')+'-03:00':'');return Number.isFinite(t)?Date.now()-t:Infinity};
 const names={SALES_COVERAGE_TOO_LOW:'Cobertura de lojas abaixo do esperado',SUDDEN_SALES_ROW_DROP:'Queda brusca na quantidade de registros',SUDDEN_STORE_COVERAGE_DROP:'Lojas desapareceram da base',STOCK_COVERAGE_TOO_LOW:'Cobertura insuficiente do catálogo',SOURCE_MONTH_MISMATCH:'Mês da fonte não corresponde ao mês configurado',INVALID_DATA_LAYOUT:'Cabeçalhos do Flash alterados',INVALID_STORE_GOAL_LAYOUT_OR_MONTH:'Estrutura ou mês das metas alterado',OLDER_STOCK_POSITION:'Posição anterior à última leitura',INCOMPLETE_STOCK_REPORT:'Relatório incompleto',MISSING_STORE_GOALS:'Metas de lojas ausentes',STOCK_TAB_MISSING:'Aba de estoque não localizada'};
 function row(name,v,detail,old=false){
  const status=v?.status==='ok'?(old?'Posição antiga':'Conectado'):v?.status==='stale'?'Última leitura válida':v?.status==='unavailable'?'Indisponível':'Aguardando';
@@ -12,7 +12,7 @@ function row(name,v,detail,old=false){
 }
 function body(){
  const a=h.sales||{},g=h.stock||{},s=a.sales||{},o=a.official||{},i=a.individual||{};
- return '<div class="bar"><button type="button" id="primeSyncNow" onclick="primeSyncNow()" '+(running?'disabled':'')+'>'+(running?'Consultando…':'Sincronizar agora')+'</button><small>Consultas automáticas a cada 5 minutos enquanto o servidor estiver ativo.</small></div><p id="primeSyncFeedback" role="status"></p><div class="scroll"><table><thead><tr><th>Fonte</th><th>Estado</th><th>Última tentativa</th><th>Último sucesso</th><th>Detalhes</th></tr></thead><tbody>'+
+ return '<p>Competência do calendário: '+esc(a.calendarMonth||'—')+' • Fontes configuradas: '+esc((a.configuredMonths||[]).join(', ')||'—')+'</p>'+(a.calendarMonth&&a.calendarMonth!==a.month?'<p style="color:#f2c66b">A competência atual ainda não está vinculada. O mês anterior não será usado como se fosse o atual.</p>':'')+(a.registryError?'<p style="color:#ff7777">Configuração de competências inválida: '+esc(a.registryError)+'</p>':'')+'<div class="bar"><button type="button" id="primeSyncNow" onclick="primeSyncNow()" '+(running?'disabled':'')+'>'+(running?'Consultando…':'Sincronizar agora')+'</button><small>Consultas automáticas a cada 5 minutos enquanto o servidor estiver ativo.</small></div><p id="primeSyncFeedback" role="status"></p><div class="scroll"><table><thead><tr><th>Fonte</th><th>Estado</th><th>Última tentativa</th><th>Último sucesso</th><th>Detalhes</th></tr></thead><tbody>'+
  row('Flash / mix',s,(s.month||'')+' • '+(s.lines??'—')+' registros • '+(s.stores??'—')+'/36 lojas com linhas • '+money(s.totalCents))+
  row('Meta geral',o,money(o.totalCents))+
  row('Metas individuais',i,(i.stores??'—')+'/36 lojas • '+money(i.totalCents))+
