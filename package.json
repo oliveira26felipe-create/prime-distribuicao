@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "start": "node preview-server.cjs"
+    "start": "node preview-server.cjs",
+    "test": "node self-tests.cjs"
   },
   "engines": {
     "node": ">=20"
