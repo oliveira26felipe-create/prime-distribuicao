@@ -25,6 +25,15 @@ function normalizeSnapshot(v,storeIds){
 }
 
 // A partial snapshot preserves each independently confirmed component. Null is unknown, never zero.
+function normalizeOrders(history,ids){
+ if(!history||typeof history!=='object'||Array.isArray(history))return {};
+ const out={};
+ for(const [id,orders] of Object.entries(history)){
+  if(!ids.has(id)||!Array.isArray(orders)||orders.length>3)continue;
+  if(orders.every(o=>o&&/^[A-Za-z0-9._-]{1,40}$/.test(o.id)&&['5','8'].includes(o.branch)&&/^\d{4}-\d{2}-\d{2}$/.test(o.date)&&/^\d{4}-\d{2}-\d{2}$/.test(o.exit)&&o.date<=o.exit&&o.items&&typeof o.items==='object'&&!Array.isArray(o.items)&&Object.keys(o.items).length<=1000&&Object.entries(o.items).every(([p,x])=>p&&p.length<=64&&Array.isArray(x)&&x.length===2&&Number.isFinite(x[0])&&x[0]>0&&Number.isSafeInteger(x[1])&&x[1]>0)))out[id]=orders;
+ }
+ return out;
+}
 function normalizePartial(v,storeIds){
  if(!v||!validMonth(v.month)||!Array.isArray(v.rows)||v.rows.length!==storeIds.size||!v.valid||!['sales','official','individual'].every(k=>typeof v.valid[k]==='boolean')||!Object.values(v.valid).some(Boolean))throw Error('INVALID_PARTIAL_HISTORY');
  const valid={sales:v.valid.sales,official:v.valid.official,individual:v.valid.individual},seen=new Set(),rows=[];
@@ -40,7 +49,7 @@ function normalizePartial(v,storeIds){
   lineCount=v.lineCount;matchedIds=v.matchedIds.slice().sort();
   for(const [id] of rows){const p=v.soldByStore[id];if(!Array.isArray(p)||new Set(p).size!==p.length||p.some(x=>typeof x!=='string'||!x||x.length>64))throw Error('INVALID_PARTIAL_HISTORY_MIX');soldByStore[id]=p.slice().sort();mixByStore[id]=p.length}
  }
- return {version:2,month:v.month,valid,rows,officialGoal:v.officialGoal,lineCount,matchedIds,soldByStore,mixByStore};
+ return {version:2,month:v.month,valid,rows,officialGoal:v.officialGoal,lineCount,matchedIds,soldByStore,mixByStore,...(valid.sales&&v.orderHistory?{orderHistory:normalizeOrders(v.orderHistory,storeIds),orderStatus:v.orderStatus==='ok'?'ok':'partial'}:{})};
 }
 function combineSnapshot(v,prior,storeIds){
  const old=prior?.valid||{sales:!!prior?.live,official:Number.isSafeInteger(prior?.officialGoal),individual:!!prior?.rows?.every(r=>Number.isSafeInteger(r[1]))};
@@ -49,12 +58,13 @@ function combineSnapshot(v,prior,storeIds){
  const valid={sales:!!(take.sales||old.sales),official:!!(take.official||old.official),individual:!!(take.individual||old.individual)};
  const sales=take.sales?v:prior,goals=take.individual?v:prior,official=take.official?v:prior;
  const sm=new Map((sales?.rows||[]).map(r=>[r[0],r[2]])),gm=new Map((goals?.rows||[]).map(r=>[r[0],r[1]]));
- return normalizePartial({version:2,month:v.month,valid,rows:[...storeIds].map(id=>[id,valid.individual?gm.get(id):null,valid.sales?sm.get(id):null]),officialGoal:valid.official?official.officialGoal:null,lineCount:valid.sales?sales.lineCount:null,matchedIds:valid.sales?sales.matchedIds:[],soldByStore:valid.sales?sales.soldByStore:{}},storeIds);
+ return normalizePartial({version:2,month:v.month,valid,rows:[...storeIds].map(id=>[id,valid.individual?gm.get(id):null,valid.sales?sm.get(id):null]),officialGoal:valid.official?official.officialGoal:null,lineCount:valid.sales?sales.lineCount:null,matchedIds:valid.sales?sales.matchedIds:[],soldByStore:valid.sales?sales.soldByStore:{},...(valid.sales&&sales.orderHistory?{orderHistory:sales.orderHistory,orderStatus:sales.orderStatus}:{})},storeIds);
 }
 
 function encodeSnapshot(v,storeIds,now=new Date().toISOString()){
-  const data=v.version===2?normalizePartial(v,storeIds):normalizeSnapshot(v,storeIds),json=JSON.stringify(data),hash=digest(json);
-  const packed=zlib.gzipSync(Buffer.from(json,'utf8')).toString('base64');
+  let data=v.version===2?normalizePartial(v,storeIds):normalizeSnapshot(v,storeIds),json=JSON.stringify(data),packed=zlib.gzipSync(Buffer.from(json,'utf8')).toString('base64');
+  if(packed.length>48000&&data.orderHistory){delete data.orderHistory;delete data.orderStatus;json=JSON.stringify(data);packed=zlib.gzipSync(Buffer.from(json,'utf8')).toString('base64');console.log('[orders-history] '+JSON.stringify({month:data.month,status:'archive_size_limit'}))}
+  const hash=digest(json);
   if(packed.length>48000)throw Error('HISTORY_SNAPSHOT_TOO_LARGE');
   return [data.month,now,hash,packed];
 }
