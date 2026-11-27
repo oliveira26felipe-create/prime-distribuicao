@@ -60,6 +60,7 @@ function makeSync(baseline){
     if(!id||!baseline)return current;
     if(inflight)return inflight;
     if(Date.now()-checkedAt<300000)return current;
+    checkedAt=Date.now();
     inflight=(async()=>{
       try{
         if(!/^[A-Za-z0-9_-]{20,120}$/.test(id)||!/^\d{4}-(0[1-9]|1[0-2])$/.test(baseline.month))throw new Error('INVALID_SHEETS_CONFIG');
@@ -107,11 +108,11 @@ function makeSync(baseline){
         console.log('[mix-sync] '+JSON.stringify({status:'ok',month:baseline.month,stores:Object.keys(result.soldByStore).length,positiveStores:Object.values(result.soldByStore).filter(p=>p.length>0).length,distinctCodes:new Set(Object.values(result.soldByStore).flat()).size}));
         console.log('[sheets-sync] '+JSON.stringify({status:'ok',month:baseline.month,stores:result.stores,lines:result.lines,totalCents:result.rows.reduce((a,r)=>a+r[2],0),changed:signature!==oldSignature}));
       }catch(e){if(current.live&&current.mixStatus==='ok')current={...current,mixStatus:'stale'};console.log('[sheets-sync] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CONNECTION_FAILED'}))}
-      finally{checkedAt=Date.now();inflight=null}
+      finally{inflight=null}
       return current;
     })();
     return inflight;
   };
-  return {get:()=>current,refresh,start(){if(!id||!baseline)return;refresh();const timer=setInterval(refresh,300000);timer.unref?.()}};
+  return {get:()=>current,refresh,start(){if(!id||!baseline)return;refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
 module.exports={makeSync,aggregate,readOfficialGoal,readStoreGoals,accessToken};
