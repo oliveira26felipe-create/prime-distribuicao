@@ -26,7 +26,7 @@ function makeOperations({seed,adminName,verifyAdmin,sign,safe,archiveId,excluded
  const sameOrigin=req=>req.headers.origin==='https://'+req.headers.host;
  function scopedCommercial(v,allowed){
   const a=new Set(allowed.map(l=>l.id)),out={};
-  for(const [month,x] of Object.entries(v?.months||{})){const rows=(x.rows||[]).filter(r=>a.has(r[0]));out[month]={month,rows,live:!!x.live,source:x.source,mixStatus:x.mixStatus,goalStatus:x.goalStatus,storeGoalStatus:x.storeGoalStatus,mixByStore:Object.fromEntries(Object.entries(x.mixByStore||{}).filter(([id])=>a.has(id))),matchedIds:(x.matchedIds||[]).filter(id=>a.has(id)),officialGoal:rows.length===catalog.stores.size?x.officialGoal:null}}
+  for(const [month,x] of Object.entries(v?.months||{})){const rows=(x.rows||[]).filter(r=>a.has(r[0]));out[month]={month,rows,live:!!x.live,source:x.source,mixStatus:x.mixStatus,goalStatus:x.goalStatus,storeGoalStatus:x.storeGoalStatus,mixByStore:Object.fromEntries(Object.entries(x.mixByStore||{}).filter(([id])=>a.has(id))),matchedIds:(x.matchedIds||[]).filter(id=>a.has(id)),soldByStore:Object.fromEntries(Object.entries(x.soldByStore||{}).filter(([id])=>a.has(id))),officialGoal:rows.length===catalog.stores.size?x.officialGoal:null}}
   return {month:v?.month,months:out};
  }
  async function handle(req,res,url){
