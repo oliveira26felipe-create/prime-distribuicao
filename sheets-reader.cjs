@@ -88,12 +88,12 @@ function makeSync(baseline,config={}){
   const failure=(k,e)=>{const status=health[k].lastSuccess?'stale':'unavailable';mark(k,status,{error:errorCode(e)});return status};
   const refresh=async(force=false)=>{
     if(inflight)return inflight;
-    if(force!==true&&Date.now()-checkedAt<300000)return current;
+    if(Date.now()-checkedAt<(force===true?30000:300000))return current;
     checkedAt=Date.now();
     inflight=(async()=>{
       try{
         const token=await getToken();
-        const get=async(sheet,suffix)=>{if(!validId(sheet))throw Error('INVALID_SHEETS_CONFIG');const r=await fetchFn('https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(sheet)+suffix,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(25000),redirect:'error'});if(!r.ok){if(r.status===401)tokenCache=null;throw Error('SHEETS_HTTP_'+r.status)}return r.json()};
+        const get=async(sheet,suffix)=>{if(!validId(sheet))throw Error('INVALID_SHEETS_CONFIG');const url='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(sheet)+suffix;const opts=()=>({headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(25000),redirect:'error'});let r=await fetchFn(url,opts());if(fetchFn===fetch&&[429,502,503,504].includes(r.status)){await new Promise(resolve=>setTimeout(resolve,2500+Math.random()*2500));r=await fetchFn(url,opts())}if(!r.ok){if(r.status===401)tokenCache=null;throw Error('SHEETS_HTTP_'+r.status)}return r.json()};
         const checkTitle=async(sheet,requireYear)=>{const data=await get(sheet,'?fields=properties(title)');const title=String(data.properties?.title||'').toLowerCase();const years=title.match(/\b20\d{2}\b/g)||[];if(!title.includes(expected)||(years.length&&!years.includes(month.slice(0,4)))||(requireYear&&!years.includes(month.slice(0,4))))throw Error('SOURCE_MONTH_MISMATCH')};
         const values=(sheet,range)=>get(sheet,'/values/'+encodeURIComponent(range)+'?valueRenderOption=UNFORMATTED_VALUE');
         // Both Flash reads share a period check; the individual goal source is independent.
@@ -143,6 +143,7 @@ function parseClosures(json,calendarMonth,knownMonths){
  if(entries.some(([m,d])=>!validMonth(m)||m>=calendarMonth||!knownMonths.has(m)||typeof d!=='string'||!/^[0-9a-f]{64}$/.test(d)))throw Error('INVALID_CLOSURE_REGISTRY');
  return new Map(entries);
 }
+const rollingReadAllowed=(month,calendarMonth,permanent)=>!permanent||month===calendarMonth;
 function makeMonthSync(baseline){
   const ids=new Set([process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID,process.env.PRIME_CANDIDATE_FAROL_ID,process.env.PRIME_CANDIDATE_META_ID].filter(Boolean));
   const readers=new Map([[baseline.month,makeSync(baseline)]]);
@@ -178,12 +179,16 @@ function makeMonthSync(baseline){
       const saved=archived.get(month);
       if(isClosed(month,saved)){all[month]={...saved,closed:true};continue;}
       if(closures.has(month)){if(saved)all[month]={...saved,closed:false,closureUnconfirmed:true};continue;}
+      if(permanent&&month<monthNow()){
+       all[month]=saved?{...saved,archived:true,closed:false,rolloverPreserved:true}:{...reader.get(),rolloverPreserved:false,mixStatus:'stale',goalStatus:'stale',storeGoalStatus:'stale'};
+       continue;
+      }
       all[month]=reader.get();
     }
     return all;
   };
   const get=()=>{const m=active(),all=months();return {...(all[m]||baseline),months:all}};
-  const health=()=>({...readers.get(active()).health(),month:active(),calendarMonth:monthNow(),configuredMonths:[...readers.keys()].sort(),registryError,closureError,closureMismatch:closureMismatch(),closedMonths:[...closures.keys()].filter(m=>isClosed(m,history.get().get(m))),openMonths:[...readers.keys()].filter(m=>!closures.has(m)).sort(),history:history.health(),months:Object.fromEntries([...readers].map(([m,r])=>[m,r.health()]))});
+  const health=()=>({...readers.get(active()).health(),month:active(),calendarMonth:monthNow(),configuredMonths:[...readers.keys()].sort(),registryError,closureError,closureMismatch:closureMismatch(),closedMonths:[...closures.keys()].filter(m=>isClosed(m,history.get().get(m))),openMonths:[...readers.keys()].filter(m=>!closures.has(m)&&rollingReadAllowed(m,monthNow(),permanent)).sort(),preservedMonths:[...history.get().keys()].filter(m=>permanent&&m<monthNow()).sort(),history:history.health(),months:Object.fromEntries([...readers].map(([m,r])=>[m,r.health()]))});
   const refresh=async(force=false)=>{
     if(flight)return flight;
     flight=(async()=>{
@@ -191,8 +196,8 @@ function makeMonthSync(baseline){
         ensureMonth();const saved=await history.load();
         for(const [m,r] of readers)if(saved.has(m))r.restore(saved.get(m));
         // A calendar rollover never closes an accounting period. Only a verified, pinned snapshot does.
-        const open=[...readers].filter(([m])=>!closures.has(m)&&m<=monthNow());
-        await Promise.allSettled(open.map(([,r])=>r.refresh(force)));
+        const open=[...readers].filter(([m])=>!closures.has(m)&&m<=monthNow()&&rollingReadAllowed(m,monthNow(),permanent));
+        for(const [,r] of open)await r.refresh(force);
         await history.save(open.map(([,r])=>r.get()));
       }finally{flight=null}
       return get();
@@ -201,4 +206,4 @@ function makeMonthSync(baseline){
   return {get,health,refresh,start(){refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
 
-module.exports={makeSync,makeMonthSync,parseClosures,aggregate,readOfficialGoal,readStoreGoals,accessToken,accessWriteToken,validateCoverage};
+module.exports={makeSync,makeMonthSync,parseClosures,aggregate,readOfficialGoal,readStoreGoals,accessToken,accessWriteToken,validateCoverage,rollingReadAllowed};
