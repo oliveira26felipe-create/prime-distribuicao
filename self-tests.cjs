@@ -180,6 +180,29 @@ async function run(){
  const priceRows=[['FILIAL','PRODUTO','PRECO_UN','UNIDADES_CAIXA'],[5,'5906',2.5,12]];
  check(supply.parsePrices(priceRows,control(1),oc,now).items['5']['5906']===3000,'preço por caixa convertido sem inventar');
  throws(()=>supply.parsePrices([priceRows[0],[5,'5906',2.5,10]],control(1),oc,now),/INVALID_PRICE_ROW/);
+ {
+ const model=require('./order-suggestion.js');
+ const product={id:'5906',unc:12},stamp='2026-11-27T09:15:00',testNow=Date.parse('2026-11-27T13:00:00Z');
+ const recent=[{id:'3',branch:'5',date:'2026-11-20',exit:'2026-11-21',items:{'5906':[96,8000]}},{id:'2',branch:'5',date:'2026-11-10',exit:'2026-11-11',items:{'5906':[144,12000]}},{id:'1',branch:'5',date:'2026-11-01',exit:'2026-11-02',items:{'5906':[120,10000]}}];
+ const stockOk={position:stamp,status:'ok',items:{'5906':{compatible:true,whole:5}}};
+ const recArgs={orders:recent,product,manual:null,count:4,pending:null,stock:stockOk,unit:'units',now:testNow};
+ const recommendation=model.calculate(recArgs);
+ check(recommendation.historyTarget===10&&recommendation.gross===6&&recommendation.s===5&&recommendation.historyCents===30000,'sugestão por três pedidos e teto real da filial');
+ check(model.calculate({...recArgs,unit:''}).s===null,'unidade desconhecida não produz quantidade automática');
+ check(model.calculate({...recArgs,pending:24}).s===4,'abate pendências confirmadas');
+ check(model.calculate({...recArgs,stock:{...stockOk,status:'stale'}}).s===null,'posição inválida não libera pedido');
+ check(model.calculate({...recArgs,count:null}).s===null,'sem contagem não presume ruptura');
+ check(model.calculate({...recArgs,manual:7}).s===3,'meta manual prevalece');
+ check(model.calculate({...recArgs,orders:recent.slice(0,1)}).s===null,'exige dois pedidos válidos para referência');
+ check(model.recent({'2026-11':{orderHistory:{'1':recent}},'2026-10':{orderHistory:{'1':[{...recent[0],branch:'8'}]}}},'1','5').length===3,'histórico filtrado por loja e filial');
+ const rowsForOrders=[['1','5906','SKU',100,0,0,12,0,0,0,'01/11/2026','02/11/2026','NF1','P1',0,0,0,0,5],['1','5906','SKU',50,0,0,6,0,0,0,'01/11/2026','02/11/2026','NF2','P1',0,0,0,0,5]];
+ const orderGroups=new Map(),badOrders=new Set();farol.collectOrders(rowsForOrders,new Set(['1']),'2026-11',orderGroups,badOrders);
+ const collected=farol.recentOrders(orderGroups,badOrders);
+ check(collected['1'][0].items['5906'][0]===18&&collected['1'][0].items['5906'][1]===15000,'agrega linhas do mesmo pedido e preserva valores');
+ const withOrders=combineSnapshot({...snapshot,orderHistory:{[snapshot.rows[0][0]]:recent},orderStatus:'ok'},null,ids);
+ const restoredOrders=decodeSnapshot(encodeSnapshot(withOrders,ids),ids);
+ check(restoredOrders.orderHistory[snapshot.rows[0][0]].length===3,'histórico de pedidos permanece após arquivamento');
+ }
  return checks;
 }
 if(require.main===module)run().then(checks=>console.log('[self-test] '+JSON.stringify({status:'ok',checks}))).catch(e=>{console.error('[self-test] failed',e.message);process.exitCode=1});
