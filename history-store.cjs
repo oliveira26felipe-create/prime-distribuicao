@@ -23,8 +23,37 @@ function normalizeSnapshot(v,storeIds){
   }
   return {month:v.month,rows,officialGoal:v.officialGoal,lineCount:v.lineCount,matchedIds,soldByStore,mixByStore};
 }
+
+// A partial snapshot preserves each independently confirmed component. Null is unknown, never zero.
+function normalizePartial(v,storeIds){
+ if(!v||!validMonth(v.month)||!Array.isArray(v.rows)||v.rows.length!==storeIds.size||!v.valid||!['sales','official','individual'].every(k=>typeof v.valid[k]==='boolean')||!Object.values(v.valid).some(Boolean))throw Error('INVALID_PARTIAL_HISTORY');
+ const valid={sales:v.valid.sales,official:v.valid.official,individual:v.valid.individual},seen=new Set(),rows=[];
+ for(const r of v.rows){
+  if(!Array.isArray(r)||r.length!==3||!storeIds.has(r[0])||seen.has(r[0])||(valid.individual?(!Number.isSafeInteger(r[1])||r[1]<0):r[1]!==null)||(valid.sales?!Number.isSafeInteger(r[2]):r[2]!==null))throw Error('INVALID_PARTIAL_HISTORY_ROW');
+  seen.add(r[0]);rows.push(r.slice());
+ }
+ rows.sort((a,b)=>a[0].localeCompare(b[0]));
+ if(valid.official?(!Number.isSafeInteger(v.officialGoal)||v.officialGoal<=0):v.officialGoal!==null)throw Error('INVALID_PARTIAL_HISTORY_GOAL');
+ const soldByStore={},mixByStore={};let matchedIds=[],lineCount=null;
+ if(valid.sales){
+  if(!Number.isSafeInteger(v.lineCount)||v.lineCount<1||!Array.isArray(v.matchedIds)||new Set(v.matchedIds).size!==v.matchedIds.length||v.matchedIds.some(id=>!seen.has(id))||v.lineCount<v.matchedIds.length||!v.soldByStore)throw Error('INVALID_PARTIAL_HISTORY_SALES');
+  lineCount=v.lineCount;matchedIds=v.matchedIds.slice().sort();
+  for(const [id] of rows){const p=v.soldByStore[id];if(!Array.isArray(p)||new Set(p).size!==p.length||p.some(x=>typeof x!=='string'||!x||x.length>64))throw Error('INVALID_PARTIAL_HISTORY_MIX');soldByStore[id]=p.slice().sort();mixByStore[id]=p.length}
+ }
+ return {version:2,month:v.month,valid,rows,officialGoal:v.officialGoal,lineCount,matchedIds,soldByStore,mixByStore};
+}
+function combineSnapshot(v,prior,storeIds){
+ const old=prior?.valid||{sales:!!prior?.live,official:Number.isSafeInteger(prior?.officialGoal),individual:!!prior?.rows?.every(r=>Number.isSafeInteger(r[1]))};
+ const take={sales:v.live&&v.mixStatus==='ok',official:v.goalStatus==='ok',individual:v.storeGoalStatus==='ok'};
+ if(!Object.values(take).some(Boolean))return null;
+ const valid={sales:!!(take.sales||old.sales),official:!!(take.official||old.official),individual:!!(take.individual||old.individual)};
+ const sales=take.sales?v:prior,goals=take.individual?v:prior,official=take.official?v:prior;
+ const sm=new Map((sales?.rows||[]).map(r=>[r[0],r[2]])),gm=new Map((goals?.rows||[]).map(r=>[r[0],r[1]]));
+ return normalizePartial({version:2,month:v.month,valid,rows:[...storeIds].map(id=>[id,valid.individual?gm.get(id):null,valid.sales?sm.get(id):null]),officialGoal:valid.official?official.officialGoal:null,lineCount:valid.sales?sales.lineCount:null,matchedIds:valid.sales?sales.matchedIds:[],soldByStore:valid.sales?sales.soldByStore:{}},storeIds);
+}
+
 function encodeSnapshot(v,storeIds,now=new Date().toISOString()){
-  const data=normalizeSnapshot(v,storeIds),json=JSON.stringify(data),hash=digest(json);
+  const data=v.version===2?normalizePartial(v,storeIds):normalizeSnapshot(v,storeIds),json=JSON.stringify(data),hash=digest(json);
   const packed=zlib.gzipSync(Buffer.from(json,'utf8')).toString('base64');
   if(packed.length>48000)throw Error('HISTORY_SNAPSHOT_TOO_LARGE');
   return [data.month,now,hash,packed];
@@ -34,8 +63,8 @@ function decodeSnapshot(row,storeIds){
   let json;
   try{json=zlib.gunzipSync(Buffer.from(row[3],'base64'),{maxOutputLength:1000000}).toString('utf8')}catch{throw Error('INVALID_HISTORY_PAYLOAD')}
   if(digest(json)!==row[2])throw Error('HISTORY_DIGEST_MISMATCH');
-  const data=normalizeSnapshot(JSON.parse(json),storeIds);if(data.month!==row[0])throw Error('HISTORY_MONTH_MISMATCH');
-  return {...data,capturedAt:row[1],digest:row[2],syncedAt:row[1],goalSyncedAt:row[1],storeGoalSyncedAt:row[1],live:true,archived:true,mixStatus:'archived',goalStatus:'archived',storeGoalStatus:'archived',source:'Histórico permanente'};
+  const raw=JSON.parse(json),data=raw.version===2?normalizePartial(raw,storeIds):normalizeSnapshot(raw,storeIds);if(data.month!==row[0])throw Error('HISTORY_MONTH_MISMATCH');
+  return {...data,capturedAt:row[1],digest:row[2],syncedAt:row[1],goalSyncedAt:row[1],storeGoalSyncedAt:row[1],live:data.valid?.sales??true,archived:true,mixStatus:data.valid?.sales===false?'unavailable':'archived',goalStatus:data.valid?.official===false?'unavailable':'archived',storeGoalStatus:data.valid?.individual===false?'unavailable':'archived',source:'Histórico permanente'};
 }
 function makeHistory({id,storeIds,excludedIds,token,fetchFn=fetch,log=console.log}){
   const configured=typeof id==='string'&&id.length>0;
@@ -70,8 +99,8 @@ function makeHistory({id,storeIds,excludedIds,token,fetchFn=fetch,log=console.lo
     try{
       const rows=[];
       for(const v of values){
-        if(!v.live||v.mixStatus!=='ok'||v.goalStatus!=='ok'||v.storeGoalStatus!=='ok')continue;
-        const row=encodeSnapshot(v,storeIds);if(loaded.get(v.month)?.digest!==row[2])rows.push(row);
+        const merged=combineSnapshot(v,loaded.get(v.month),storeIds);if(!merged)continue;
+        const row=encodeSnapshot(merged,storeIds);if(loaded.get(v.month)?.digest!==row[2])rows.push(row);
       }
       if(!rows.length)return;
       const req=await getRequest(),result=await req('/values/'+range+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS','POST',{values:rows});
@@ -83,4 +112,4 @@ function makeHistory({id,storeIds,excludedIds,token,fetchFn=fetch,log=console.lo
   }
   return {configured,load,save,get:()=>new Map(loaded),health:()=>status};
 }
-module.exports={makeHistory,normalizeSnapshot,encodeSnapshot,decodeSnapshot};
+module.exports={makeHistory,normalizeSnapshot,normalizePartial,combineSnapshot,encodeSnapshot,decodeSnapshot};
