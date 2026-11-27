@@ -97,25 +97,26 @@ function makeSync(baseline,config={}){
         const checkTitle=async(sheet,requireYear)=>{const data=await get(sheet,'?fields=properties(title)');const title=String(data.properties?.title||'').toLowerCase();const years=title.match(/\b20\d{2}\b/g)||[];if(!title.includes(expected)||(years.length&&!years.includes(month.slice(0,4)))||(requireYear&&!years.includes(month.slice(0,4))))throw Error('SOURCE_MONTH_MISMATCH')};
         const values=(sheet,range)=>get(sheet,'/values/'+encodeURIComponent(range)+'?valueRenderOption=UNFORMATTED_VALUE');
         // Both Flash reads share a period check; the individual goal source is independent.
-        const flashReady=checkTitle(id,config.requireYear===true);
+        const farol=config.farol===true,farolReader=farol?require('./farol-reader.cjs'):null;
+        const flashReady=farol?Promise.resolve():checkTitle(id,config.requireYear===true);
         const tasks=[
-          (async()=>{await flashReady;const data=await values(id,"'Dados'!A1:D");const [header,...rows]=data.values||[];if(header?.[0]!=='CODCLI'||header?.[1]!=='PRODUTO'||header?.[3]!=='VLVENDA')throw Error('INVALID_DATA_LAYOUT');const result=aggregate(rows,baseline);validateCoverage(result,current,minStores);return result})(),
-          (async()=>{await flashReady;const data=await values(id,"'Metas x Realizado'!A1:ZZ997");return readOfficialGoal(data.values||[])})(),
+          (async()=>{let rows;if(farol)rows=await farolReader.readFarol(get,id,baseline);else{await flashReady;const data=await values(id,"'Dados'!A1:D");const [header,...rest]=data.values||[];if(header?.[0]!=='CODCLI'||header?.[1]!=='PRODUTO'||header?.[3]!=='VLVENDA')throw Error('INVALID_DATA_LAYOUT');rows=rest}const result=aggregate(rows,baseline);validateCoverage(result,current,minStores);return result})(),
+          (async()=>{if(farol)return farolReader.readMetaFlash(get,config.officialId,month,monthNow());await flashReady;const data=await values(id,"'Metas x Realizado'!A1:ZZ997");return readOfficialGoal(data.values||[])})(),
           (async()=>{if(!gid)throw Error('GOALS_NOT_CONFIGURED');await checkTitle(gid,true);const data=await values(gid,"'Metas "+expected+"'!A1:E");return readStoreGoals(data.values||[],baseline)})()
         ];
         const [sales,official,individual]=await Promise.allSettled(tasks);
         const next={...current,month};
         if(sales.status==='fulfilled'){
           const r=sales.value,prevGoals=new Map(current.rows.map(([id,m])=>[id,m]));
-          next.rows=r.rows.map(([id,m,actual])=>[id,prevGoals.get(id)??m,actual]);next.mixByStore=r.mixByStore;next.soldByStore=r.soldByStore;next.matchedIds=r.matchedIds;next.lineCount=r.lines;next.live=true;next.archived=false;next.mixStatus='ok';next.source='Flash de Vendas - aba Dados';
+          next.rows=r.rows.map(([id,m,actual])=>[id,prevGoals.get(id)??m,actual]);next.mixByStore=r.mixByStore;next.soldByStore=r.soldByStore;next.matchedIds=r.matchedIds;next.lineCount=r.lines;next.live=true;next.archived=false;next.mixStatus='ok';next.source=farol?'8095 - FAROL, aba 8095':'Flash de Vendas - aba Dados';
           const changed=JSON.stringify([next.rows.map(([id,m,a])=>[id,a]),r.soldByStore,r.matchedIds,r.lines])!==JSON.stringify([current.rows.map(([id,m,a])=>[id,a]),current.soldByStore,current.matchedIds,current.lineCount]);
           if(changed||!current.syncedAt)next.syncedAt=new Date().toISOString();
-          mark('sales','ok',{month,lines:r.lines,stores:r.stores,totalCents:r.rows.reduce((n,x)=>n+x[2],0),missingStores:baseline.rows.length-r.stores});
+          mark('sales','ok',{month,lines:r.lines,stores:r.stores,totalCents:r.rows.reduce((n,x)=>n+x[2],0),missingStores:baseline.rows.length-r.stores,source:next.source});
           log('[mix-sync] '+JSON.stringify({status:'ok',month,stores:baseline.rows.length,positiveStores:Object.values(r.soldByStore).filter(x=>x.length).length,distinctCodes:new Set(Object.values(r.soldByStore).flat()).size}));
           log('[sheets-sync] '+JSON.stringify({status:'ok',month,stores:r.stores,lines:r.lines,totalCents:health.sales.totalCents,changed}));
         }else{next.mixStatus=failure('sales',sales.reason);log('[sheets-sync] '+JSON.stringify({month,status:next.mixStatus,code:errorCode(sales.reason)}))}
         if(official.status==='fulfilled'){
-          if(next.officialGoal!==official.value||!next.goalSyncedAt)next.goalSyncedAt=new Date().toISOString();next.officialGoal=official.value;next.goalStatus='ok';mark('official','ok',{totalCents:official.value});
+          if(next.officialGoal!==official.value||!next.goalSyncedAt)next.goalSyncedAt=new Date().toISOString();next.officialGoal=official.value;next.goalStatus='ok';mark('official','ok',{totalCents:official.value,source:farol?'METAS - FLASH, aba METAS':'Flash de Vendas, Metas x Realizado'});
           log('[goals-sync] '+JSON.stringify({status:'ok',month,officialGoalCents:official.value}));
         }else{next.goalStatus=failure('official',official.reason);log('[goals-sync] '+JSON.stringify({month,status:next.goalStatus,code:errorCode(official.reason)}))}
         if(individual.status==='fulfilled'){
@@ -143,8 +144,15 @@ function parseClosures(json,calendarMonth,knownMonths){
  return new Map(entries);
 }
 function makeMonthSync(baseline){
-  const readers=new Map([[baseline.month,makeSync(baseline)]]),ids=new Set([process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID].filter(Boolean));
+  const ids=new Set([process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID,process.env.PRIME_CANDIDATE_FAROL_ID,process.env.PRIME_CANDIDATE_META_ID].filter(Boolean));
+  const readers=new Map([[baseline.month,makeSync(baseline)]]);
   let registryError=null;
+  if(process.env.PRIME_FAROL_MONTH){
+    const salesId=process.env.PRIME_CANDIDATE_FAROL_ID,officialId=process.env.PRIME_CANDIDATE_META_ID;
+    const excluded=new Set([process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID,process.env.PRIME_SHEETS_STOCK_ID,process.env.PRIME_HISTORY_ID,process.env.PRIME_SHEETS_PRICES_ID,process.env.PRIME_SHEETS_ORDERS_ID]);
+    if(process.env.PRIME_FAROL_MONTH!==baseline.month||!validId(salesId)||!validId(officialId)||salesId===officialId||excluded.has(salesId)||excluded.has(officialId)){registryError='INVALID_FAROL_REGISTRY';console.log('[month-registry] '+JSON.stringify({status:'error',code:registryError}))}
+    else readers.set(baseline.month,makeSync(baseline,{farol:true,salesId,officialId}));
+  }
   try{
     const extra=JSON.parse(process.env.PRIME_MONTH_SOURCES_JSON||'[]');
     if(!Array.isArray(extra))throw Error('INVALID_MONTH_REGISTRY');
