@@ -37,11 +37,11 @@ function decodeSnapshot(row,storeIds){
   const data=normalizeSnapshot(JSON.parse(json),storeIds);if(data.month!==row[0])throw Error('HISTORY_MONTH_MISMATCH');
   return {...data,capturedAt:row[1],digest:row[2],syncedAt:row[1],goalSyncedAt:row[1],storeGoalSyncedAt:row[1],live:true,archived:true,mixStatus:'archived',goalStatus:'archived',storeGoalStatus:'archived',source:'Histórico permanente'};
 }
-function makeHistory({id,storeIds,excludedIds,token,fetchFn=fetch}){
+function makeHistory({id,storeIds,excludedIds,token,fetchFn=fetch,log=console.log}){
   const configured=typeof id==='string'&&id.length>0;
   let status={configured,status:configured?'pending':'not_configured'},ready=false,loaded=new Map(),flight=null,checkedAt=0;
   const setStatus=(state,error=null)=>{status={...status,status:state,checkedAt:new Date().toISOString(),error,months:[...loaded.keys()].sort(),...(state==='ok'?{lastSuccess:new Date().toISOString()}: {})}};
-  const fail=e=>{ready=false;setStatus(loaded.size?'stale':'unavailable',/^[A-Z_0-9]+$/.test(e?.message||'')?e.message:'HISTORY_CONNECTION_FAILED');console.log('[history-sync] '+JSON.stringify({status:status.status,code:status.error}))};
+  const fail=e=>{ready=false;setStatus(loaded.size?'stale':'unavailable',/^[A-Z_0-9]+$/.test(e?.message||'')?e.message:'HISTORY_CONNECTION_FAILED');log('[history-sync] '+JSON.stringify({status:status.status,code:status.error}))};
   const getRequest=async()=>{if(!/^[A-Za-z0-9_-]{20,120}$/.test(id)||excludedIds.has(id))throw Error('INVALID_HISTORY_DESTINATION');const bearer=await token(),base='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(id);return async(suffix,method='GET',body)=>{const r=await fetchFn(base+suffix,{method,headers:{Authorization:'Bearer '+bearer,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(25000),redirect:'error'});if(!r.ok)throw Error('HISTORY_HTTP_'+r.status);return r.json()}};
   const range=encodeURIComponent("'Comercial'!A1:D");
   async function load(force=false){
@@ -60,7 +60,7 @@ function makeHistory({id,storeIds,excludedIds,token,fetchFn=fetch}){
         if(!prior||Date.parse(v.capturedAt)>=Date.parse(prior.capturedAt))next.set(v.month,v);
       }
       loaded=next;ready=true;setStatus('ok');
-      console.log('[history-sync] '+JSON.stringify({status:'ok',months:[...loaded.keys()].sort()}));
+      log('[history-sync] '+JSON.stringify({status:'ok',months:[...loaded.keys()].sort()}));
     }catch(e){fail(e)}finally{flight=null}return loaded})();
     return flight;
   }
@@ -78,7 +78,7 @@ function makeHistory({id,storeIds,excludedIds,token,fetchFn=fetch}){
       if(result.updates?.updatedRows!==rows.length)throw Error('HISTORY_WRITE_UNCONFIRMED');
       for(const row of rows){const v=decodeSnapshot(row,storeIds);loaded.set(v.month,v)}
       setStatus('ok');status={...status,lastSaved:new Date().toISOString()};
-      console.log('[history-sync] '+JSON.stringify({status:'saved',months:rows.map(r=>r[0])}));
+      log('[history-sync] '+JSON.stringify({status:'saved',months:rows.map(r=>r[0])}));
     }catch(e){fail(e)}
   }
   return {configured,load,save,get:()=>new Map(loaded),health:()=>status};
