@@ -78,7 +78,7 @@ const validId=id=>typeof id==='string'&&/^[A-Za-z0-9_-]{20,120}$/.test(id);
 const validMonth=m=>typeof m==='string'&&/^\d{4}-(0[1-9]|1[0-2])$/.test(m);
 function makeSync(baseline,config={}){
   const id=config.salesId??process.env.PRIME_SHEETS_FIRST_ID;
-  const gid=config.goalsId??process.env.PRIME_SHEETS_GOALS_ID;
+  const gid=Object.hasOwn(config,'goalsId')?config.goalsId:process.env.PRIME_SHEETS_GOALS_ID;
   const month=baseline.month,expected=monthNames[Number(month.slice(5))-1];
   const minStores=config.minStores??30;
   const fetchFn=config.fetchFn||fetch,getToken=config.getToken||accessToken,log=config.log||console.log;
@@ -101,7 +101,7 @@ function makeSync(baseline,config={}){
         const flashReady=farol?Promise.resolve():checkTitle(id,config.requireYear===true);
         const tasks=[
           (async()=>{let rows;if(farol)rows=await farolReader.readFarol(get,id,baseline);else{await flashReady;const data=await values(id,"'Dados'!A1:D");const [header,...rest]=data.values||[];if(header?.[0]!=='CODCLI'||header?.[1]!=='PRODUTO'||header?.[3]!=='VLVENDA')throw Error('INVALID_DATA_LAYOUT');rows=rest}const result=aggregate(rows,baseline);validateCoverage(result,current,minStores);return result})(),
-          (async()=>{if(farol)return farolReader.readMetaFlash(get,config.officialId,month,monthNow());await flashReady;const data=await values(id,"'Metas x Realizado'!A1:ZZ997");return readOfficialGoal(data.values||[])})(),
+          (async()=>{if(farol)return farolReader.readMetaFlash(get,config.officialId,month,monthNow(),config.confirmedMetaMonth);await flashReady;const data=await values(id,"'Metas x Realizado'!A1:ZZ997");return readOfficialGoal(data.values||[])})(),
           (async()=>{if(!gid)throw Error('GOALS_NOT_CONFIGURED');await checkTitle(gid,true);const data=await values(gid,"'Metas "+expected+"'!A1:E");return readStoreGoals(data.values||[],baseline)})()
         ];
         const [sales,official,individual]=await Promise.allSettled(tasks);
@@ -116,7 +116,7 @@ function makeSync(baseline,config={}){
           log('[sheets-sync] '+JSON.stringify({status:'ok',month,stores:r.stores,lines:r.lines,totalCents:health.sales.totalCents,changed}));
         }else{next.mixStatus=failure('sales',sales.reason);log('[sheets-sync] '+JSON.stringify({month,status:next.mixStatus,code:errorCode(sales.reason)}))}
         if(official.status==='fulfilled'){
-          if(next.officialGoal!==official.value||!next.goalSyncedAt)next.goalSyncedAt=new Date().toISOString();next.officialGoal=official.value;next.goalStatus='ok';mark('official','ok',{totalCents:official.value,source:farol?'METAS - FLASH, aba METAS':'Flash de Vendas, Metas x Realizado'});
+          if(next.officialGoal!==official.value||!next.goalSyncedAt)next.goalSyncedAt=new Date().toISOString();next.officialGoal=official.value;next.goalStatus='ok';next.officialSource=farol?'METAS - FLASH, aba METAS':'Flash de Vendas, Metas x Realizado';mark('official','ok',{totalCents:official.value,source:farol?'METAS - FLASH, aba METAS':'Flash de Vendas, Metas x Realizado'});
           log('[goals-sync] '+JSON.stringify({status:'ok',month,officialGoalCents:official.value}));
         }else{next.goalStatus=failure('official',official.reason);log('[goals-sync] '+JSON.stringify({month,status:next.goalStatus,code:errorCode(official.reason)}))}
         if(individual.status==='fulfilled'){
@@ -134,7 +134,7 @@ function makeSync(baseline,config={}){
     })();
     return inflight;
   };
-  return {get:()=>current,health:()=>health,restore(snapshot){if(!current.live&&snapshot?.month===month){current={...snapshot,live:true,archived:true,mixStatus:'stale',goalStatus:'stale',storeGoalStatus:'stale',source:'Histórico permanente'};for(const k of ['sales','official','individual'])health[k]={status:'stale',lastSuccess:snapshot.capturedAt}}},refresh,start(){refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
+  return {get:()=>current,health:()=>health,restore(snapshot){if(snapshot?.month!==month)return;const valid=snapshot.valid||{sales:!!snapshot.live,official:Number.isSafeInteger(snapshot.officialGoal),individual:snapshot.rows.every(r=>Number.isSafeInteger(r[1]))};const restoreSales=valid.sales&&!current.live,restoreOfficial=valid.official&&health.official.status!=='ok'&&!health.official.lastSuccess,restoreIndividual=valid.individual&&health.individual.status!=='ok'&&!health.individual.lastSuccess;const byId=new Map(snapshot.rows.map(r=>[r[0],r]));if(restoreSales||restoreIndividual)current.rows=current.rows.map(r=>[r[0],restoreIndividual?byId.get(r[0])[1]:r[1],restoreSales?byId.get(r[0])[2]:r[2]]);if(restoreSales){for(const k of ['soldByStore','mixByStore','matchedIds','lineCount','syncedAt'])current[k]=snapshot[k];current.live=true;current.archived=true;current.mixStatus='stale';current.source='Histórico permanente';health.sales={status:'stale',lastSuccess:snapshot.capturedAt}}if(restoreOfficial){current.officialGoal=snapshot.officialGoal;current.goalStatus='stale';current.goalSyncedAt=snapshot.goalSyncedAt;health.official={status:'stale',lastSuccess:snapshot.capturedAt}}if(restoreIndividual){current.storeGoalStatus='stale';current.storeGoalSyncedAt=snapshot.storeGoalSyncedAt;health.individual={status:'stale',lastSuccess:snapshot.capturedAt}}},refresh,start(){refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
 function parseClosures(json,calendarMonth,knownMonths){
  const o=JSON.parse(json);
@@ -146,31 +146,32 @@ function parseClosures(json,calendarMonth,knownMonths){
 function makeMonthSync(baseline){
   const ids=new Set([process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID,process.env.PRIME_CANDIDATE_FAROL_ID,process.env.PRIME_CANDIDATE_META_ID].filter(Boolean));
   const readers=new Map([[baseline.month,makeSync(baseline)]]);
-  let registryError=null;
+  let registryError=null,permanent=null;
   if(process.env.PRIME_FAROL_MONTH){
     const salesId=process.env.PRIME_CANDIDATE_FAROL_ID,officialId=process.env.PRIME_CANDIDATE_META_ID;
     const excluded=new Set([process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID,process.env.PRIME_SHEETS_STOCK_ID,process.env.PRIME_HISTORY_ID,process.env.PRIME_SHEETS_PRICES_ID,process.env.PRIME_SHEETS_ORDERS_ID]);
     if(process.env.PRIME_FAROL_MONTH!==baseline.month||!validId(salesId)||!validId(officialId)||salesId===officialId||excluded.has(salesId)||excluded.has(officialId)){registryError='INVALID_FAROL_REGISTRY';console.log('[month-registry] '+JSON.stringify({status:'error',code:registryError}))}
-    else readers.set(baseline.month,makeSync(baseline,{farol:true,salesId,officialId}));
+    else{permanent={salesId,officialId,confirmedMetaMonth:process.env.PRIME_FAROL_MONTH};readers.set(baseline.month,makeSync(baseline,{farol:true,...permanent}));}
   }
   try{
     const extra=JSON.parse(process.env.PRIME_MONTH_SOURCES_JSON||'[]');
     if(!Array.isArray(extra))throw Error('INVALID_MONTH_REGISTRY');
     const accepted=[];
     for(const cfg of extra){
-      if(!cfg||!validMonth(cfg.month)||cfg.month===baseline.month||accepted.some(x=>x.month===cfg.month)||!validId(cfg.salesId)||!validId(cfg.goalsId)||cfg.salesId===cfg.goalsId||ids.has(cfg.salesId)||ids.has(cfg.goalsId)||!Number.isInteger(cfg.minStores??1)||(cfg.minStores??1)<1||(cfg.minStores??1)>36)throw Error('INVALID_MONTH_REGISTRY');
-      ids.add(cfg.salesId);ids.add(cfg.goalsId);accepted.push(cfg);
+      if(!cfg||!validMonth(cfg.month)||cfg.month===baseline.month||accepted.some(x=>x.month===cfg.month)||!validId(cfg.goalsId)||ids.has(cfg.goalsId)||(!permanent&&(!validId(cfg.salesId)||cfg.salesId===cfg.goalsId||ids.has(cfg.salesId)))||!Number.isInteger(cfg.minStores??1)||(cfg.minStores??1)<1||(cfg.minStores??1)>36)throw Error('INVALID_MONTH_REGISTRY');
+      if(!permanent)ids.add(cfg.salesId);ids.add(cfg.goalsId);accepted.push(cfg);
     }
-    for(const cfg of accepted)readers.set(cfg.month,makeSync({month:cfg.month,rows:baseline.rows.map(([id])=>[id,null,null])},{...cfg,minStores:cfg.minStores??1,requireYear:true}));
+    for(const cfg of accepted)readers.set(cfg.month,makeSync({month:cfg.month,rows:baseline.rows.map(([id])=>[id,null,null])},{...cfg,...(permanent?{farol:true,...permanent}:{}),minStores:cfg.minStores??1,requireYear:true}));
   }catch(e){registryError=errorCode(e);console.log('[month-registry] '+JSON.stringify({status:'error',code:registryError}))}
   ids.add(process.env.PRIME_SHEETS_STOCK_ID);ids.add(process.env.PRIME_SHEETS_PRICES_ID);ids.add(process.env.PRIME_SHEETS_ORDERS_ID);
   const history=require('./history-store.cjs').makeHistory({id:process.env.PRIME_HISTORY_ID,storeIds:new Set(baseline.rows.map(([id])=>String(id))),excludedIds:ids,token:accessWriteToken});
+  const ensureMonth=()=>{const m=monthNow();if(permanent&&m>=baseline.month&&!readers.has(m))readers.set(m,makeSync({month:m,rows:baseline.rows.map(([id])=>[id,null,null])},{farol:true,...permanent,goalsId:null,minStores:1,requireYear:true}));};ensureMonth();
   let closures=new Map(),closureError=null;
   try{closures=parseClosures(process.env.PRIME_CLOSED_MONTHS_JSON||'{}',monthNow(),new Set(readers.keys()))}catch(e){closureError=errorCode(e)}
   const isClosed=(m,saved)=>closures.has(m)&&saved?.digest===closures.get(m);
   const closureMismatch=()=>[...closures].filter(([m,d])=>history.get().get(m)?.digest!==d).map(([m])=>m);
   let flight=null;
-  const active=()=>readers.has(monthNow())?monthNow():[...readers.keys()].filter(m=>m<=monthNow()).sort().at(-1)||baseline.month;
+  const active=()=>{ensureMonth();return readers.has(monthNow())?monthNow():[...readers.keys()].filter(m=>m<=monthNow()).sort().at(-1)||baseline.month;};
   const months=()=>{
     const archived=history.get(),all=Object.fromEntries(archived);
     for(const [month,reader] of readers){
@@ -181,13 +182,13 @@ function makeMonthSync(baseline){
     }
     return all;
   };
-  const get=()=>{const all=months();return {...(all[active()]||baseline),months:all}};
+  const get=()=>{const m=active(),all=months();return {...(all[m]||baseline),months:all}};
   const health=()=>({...readers.get(active()).health(),month:active(),calendarMonth:monthNow(),configuredMonths:[...readers.keys()].sort(),registryError,closureError,closureMismatch:closureMismatch(),closedMonths:[...closures.keys()].filter(m=>isClosed(m,history.get().get(m))),openMonths:[...readers.keys()].filter(m=>!closures.has(m)).sort(),history:history.health(),months:Object.fromEntries([...readers].map(([m,r])=>[m,r.health()]))});
   const refresh=async(force=false)=>{
     if(flight)return flight;
     flight=(async()=>{
       try{
-        const saved=await history.load();
+        ensureMonth();const saved=await history.load();
         for(const [m,r] of readers)if(saved.has(m))r.restore(saved.get(m));
         // A calendar rollover never closes an accounting period. Only a verified, pinned snapshot does.
         const open=[...readers].filter(([m])=>!closures.has(m)&&m<=monthNow());
