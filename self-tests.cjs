@@ -107,6 +107,73 @@ async function run(){
  check(farol.readMetaRows(metaRows)===12345,'meta geral AV na linha Americanas');
  throws(()=>farol.readMetaRows([...metaRows,metaRows[3]]),/AMERICANAS_GOAL_ROW_MISSING_OR_DUPLICATE/);
  await assert.rejects(()=>farol.readMetaFlash(async()=>{throw Error('unexpected network')},'test','2026-11','2026-12'),/META_FLASH_PERIOD_UNCONFIRMED/);checks++;
+
+ // Independent archival of commercial data even when the other sources fail.
+ const {combineSnapshot}=require('./history-store.cjs');
+ const partialSales={...snapshot,goalStatus:'stale',storeGoalStatus:'unavailable',mixStatus:'ok'};
+ const onlySales=combineSnapshot(partialSales,null,ids);
+ check(onlySales.valid.sales&&!onlySales.valid.official&&!onlySales.valid.individual&&onlySales.rows.every(r=>r[1]===null),'arquiva vendas isoladamente sem inventar metas');
+ const merged=combineSnapshot({...snapshot,mixStatus:'stale',goalStatus:'ok',officialGoal:22222,storeGoalStatus:'unavailable'},onlySales,ids);
+ check(merged.valid.sales&&merged.valid.official&&merged.officialGoal===22222&&merged.lineCount===snapshot.lineCount,'mescla somente fontes válidas');
+ const partialDecoded=decodeSnapshot(encodeSnapshot(merged,ids),ids);
+ check(partialDecoded.live&&partialDecoded.storeGoalStatus==='unavailable'&&partialDecoded.rows.every(r=>r[1]===null),'recupera histórico parcial');
+ const emptyReader=makeSync(baseline,{salesId,goalsId,fetchFn,getToken:async()=>'test',log:()=>{}});
+ emptyReader.restore(partialDecoded);
+ check(emptyReader.get().live&&emptyReader.get().officialGoal===22222&&emptyReader.get().storeGoalStatus!=='ok','restaura componentes independentemente');
+ const metaGet=async (id,path)=>{
+  if(path.startsWith('?'))return {properties:{title:'METAS - FLASH'},sheets:[{properties:{title:'Competencia'}}]};
+  if(decodeURIComponent(path).includes("'Competencia'"))return {values:[['2026-12']]};
+  return {values:metaRows};
+ };
+ check(await farol.readMetaFlash(metaGet,'test','2026-12','2026-12','2026-11')===12345,'meta permanente aceita competência explícita');
+ await assert.rejects(()=>farol.readMetaFlash(metaGet,'test','2026-11','2026-11','2026-11'),/META_FLASH_PERIOD_UNCONFIRMED/);checks++;
+ // Operational permissions, stock and expiry validation, immutable append and retry.
+ const ops=require('./operations-store.cjs'),crypto=require('node:crypto');
+ const oc={stores:new Map([['1',{id:'1',branch:'5',promoter:'P1',coordinator:'C1'}],['2',{id:'2',branch:'8',promoter:'P2',coordinator:'C2'}]]),products:new Map([['5906',{id:'5906',name:'Produto',unitsPerBox:12}]])};
+ check(ops.permitted({role:'promoter',name:'P1'},oc.stores.get('1'))&&!ops.permitted({role:'promoter',name:'P1'},oc.stores.get('2')),'promotor limitado à loja');
+ check(ops.permitted({role:'coordinator',name:'C1'},oc.stores.get('1'))&&!ops.permitted({role:'coordinator',name:'C1'},oc.stores.get('2'))&&!ops.canBalance({role:'coordinator'}),'coordenador limitado ao escopo de leitura');
+ check(ops.canBalance({role:'chief'})&&ops.canTarget({role:'chief'})&&!ops.canTarget({role:'promoter'}),'permissões de balanço e reposição');
+ const balanceData={store:'1',items:{'5906':{qty:5,lots:[{date:'2027-01-01',qty:2},{date:'2027-01-01',qty:1}]}},note:'teste sintético'};
+ check(ops.normalizeBalance(balanceData,oc).items['5906'].lots[0].qty===3,'consolidação de lotes');
+ throws(()=>ops.normalizeBalance({...balanceData,items:{'5906':{qty:1,lots:[{date:'2027-01-01',qty:2}]}}},oc),/EXPIRY_EXCEEDS_BALANCE/);
+ throws(()=>ops.normalizeBalance({...balanceData,items:{'5906':{qty:3,lots:[{date:'2027-02-31',qty:2}]}}},oc),/INVALID_EXPIRY/);
+ let opTab=false,opRows=[],opWrites=0;
+ const opFetch=async(url,opt)=>{
+  const u=decodeURIComponent(url);let data;
+  if(u.includes('?fields='))data={properties:{title:'PRIME - Histórico Americanas'},sheets:opTab?[{properties:{title:'Operacional'}}]:[]};
+  else if(u.includes(':batchUpdate')){opTab=true;data={}}
+  else if(u.includes(':append')){const v=JSON.parse(opt.body).values;opRows.push(...v);opWrites++;data={updates:{updatedRows:v.length}}}
+  else if(opt.method==='PUT'){opRows=JSON.parse(opt.body).values;data={}}
+  else if(opt.method==='GET')data={values:opRows};
+  else throw Error('UNEXPECTED_TEST_URL');
+  return {ok:true,json:async()=>data};
+ };
+ const opOpts={id:'synthetic-history-destination',catalog:oc,adminName:'admin',excludedIds:new Set(),token:async()=>'test',fetchFn:opFetch,log:()=>{}};
+ const op=ops.createStore(opOpts),admin={username:'admin',version:'admin'};
+ await op.init();
+ await op.mutate(admin,{id:crypto.randomUUID(),kind:'account',data:{username:'promotor1',profile:'P1',password:'synthetic-only-password',enabled:true}});
+ const principal=await op.authenticate('promotor1','synthetic-only-password');
+ check(!!principal&&(await op.getState(principal)).stores.map(l=>l.id).join(',')==='1','login individual e escopo de dados');
+ check(await op.authenticate('promotor1','wrong-password')===null,'rejeita senha incorreta');
+ await assert.rejects(()=>op.mutate(principal,{id:crypto.randomUUID(),kind:'balance',data:{...balanceData,store:'2'}}),/FORBIDDEN/);checks++;
+ await assert.rejects(()=>op.mutate(principal,{id:crypto.randomUUID(),kind:'targets',data:{store:'1',items:{'5906':10}}}),/FORBIDDEN/);checks++;
+ const event={id:crypto.randomUUID(),kind:'balance',data:balanceData};
+ await op.mutate(principal,event);const again=await op.mutate(principal,event);
+ check(again.duplicate&&opWrites===2&&(await op.getState(principal)).balances.length===1,'balanço persistido e retry idempotente');
+ await assert.rejects(()=>op.mutate(principal,{...event,data:{...balanceData,note:'outro'}}),/OPERATIONAL_EVENT_CONFLICT/);checks++;
+ const op2=ops.createStore(opOpts);await op2.init();check((await op2.getState(principal)).latest['1']['5906'].qty===5,'recupera balanço após reinicialização');
+ await op2.mutate(admin,{id:crypto.randomUUID(),kind:'account',data:{username:'promotor1',profile:'P1',password:'',enabled:false}});
+ await assert.rejects(()=>op2.getState(principal),/AUTH_REQUIRED/);checks++;
+ const supply=require('./supply-reader.cjs'),now=Date.now(),stamp=new Date(now).toISOString().replace(/\.\d{3}Z$/,'Z');
+ const control=n=>[['POSICAO',stamp],['REGISTROS',n],['COMPLETO','SIM']];
+ const pendingHead=['FILIAL','CODCLI','PRODUTO','PEDIDO','ITEM','QTD_PENDENTE_UN'];
+ const pendingRows=[pendingHead,[5,'1','5906','P','1',18]];
+ check(supply.parsePending(pendingRows,control(1),oc,now).items['1']['5906']===18,'pedido pendente em unidades validado');
+ throws(()=>supply.parsePending([...pendingRows,pendingRows[1]],control(2),oc,now),/INVALID_PENDING_ROW/);
+ throws(()=>supply.parsePending(pendingRows,control(2),oc,now),/SUPPLY_REPORT_NOT_CONFIRMED/);
+ const priceRows=[['FILIAL','PRODUTO','PRECO_UN','UNIDADES_CAIXA'],[5,'5906',2.5,12]];
+ check(supply.parsePrices(priceRows,control(1),oc,now).items['5']['5906']===3000,'preço por caixa convertido sem inventar');
+ throws(()=>supply.parsePrices([priceRows[0],[5,'5906',2.5,10]],control(1),oc,now),/INVALID_PRICE_ROW/);
  return checks;
 }
 if(require.main===module)run().then(checks=>console.log('[self-test] '+JSON.stringify({status:'ok',checks}))).catch(e=>{console.error('[self-test] failed',e.message);process.exitCode=1});
