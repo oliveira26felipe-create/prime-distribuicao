@@ -134,6 +134,33 @@ function createStore({id,excludedIds,catalog,adminName,token,fetchFn=fetch,log=c
   const e={id:input.id,at:new Date().toISOString(),actor:u.username,actorName:u.name,kind:input.kind,data};
   await append(e);return {ok:true,id:e.id,at:e.at};
  })}
- return {init:()=>exclusive(async()=>{try{await load();log('[operations] '+JSON.stringify({status:'ok',balances:state.balances.length,accounts:health.accounts}))}catch(e){log('[operations] '+JSON.stringify({status:'unavailable',code:e.message}))}}),getState,authenticate,mutate,health:()=>health};
+
+ // One-time provisioning from private deployment configuration; never reset existing accounts.
+ async function provision(password){
+  if(!password)return;
+  if(typeof password!=='string'||password.length<12||password.length>128)throw err('PASSWORD_LENGTH');
+  const s=await load(true),list=[...profiles(catalog).keys()].sort(),names=new Set();
+  const planned=list.map(profile=>({profile,username:norm(profile).replace(/\s+/g,'.')}));
+  if(planned.length!==24||planned.some(x=>!(/^[a-z0-9._-]{3,64}$/.test(x.username))||x.username===adminName||names.has(x.username)||!names.add(x.username)))throw err('INVALID_PROVISIONING_PROFILES');
+  const events=[];let existing=0;
+  for(const {profile,username} of planned){
+   const prior=s.users.get(username);
+   if(prior){if(prior.profile!==profile)throw err('PROVISIONING_CONFLICT',409);existing++;continue}
+   if([...s.users.values()].some(v=>v.profile===profile))throw err('PROVISIONING_CONFLICT',409);
+   const salt=crypto.randomBytes(16).toString('hex');
+   const data=normalizeAccount({username,profile,enabled:true,version:crypto.randomUUID(),salt,hash:crypto.scryptSync(password,salt,32).toString('hex')},catalog,adminName);
+   events.push({id:crypto.randomUUID(),at:new Date().toISOString(),actor:adminName,actorName:'Administrador',kind:'account',data});
+  }
+  if(events.length){
+   const rows=events.map(e=>{const json=JSON.stringify(e);return [e.id,e.at,digest(json),json]});
+   const get=await request();
+   try{const r=await get('/values/'+range+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS','POST',{values:rows});if(r.updates?.updatedRows!==rows.length)throw err('OPERATIONAL_WRITE_UNCONFIRMED',503)}catch{ready=false;throw err('OPERATIONAL_WRITE_UNCONFIRMED',503)}
+  }
+  const verified=await load(true);
+  const checked=planned.filter(({username,profile})=>{const a=verified.users.get(username);return a?.enabled&&a.profile===profile&&crypto.timingSafeEqual(Buffer.from(a.hash,'hex'),crypto.scryptSync(password,a.salt,32))});
+  log('[operations-provision] '+JSON.stringify({status:checked.length===planned.length?'ok':'existing_accounts_not_changed',created:events.length,existing,verified:checked.length,total:planned.length}));
+ }
+
+ return {init:()=>exclusive(async()=>{try{await load();if(process.env.PRIME_PROVISION_PASSWORD)await provision(process.env.PRIME_PROVISION_PASSWORD);log('[operations] '+JSON.stringify({status:'ok',balances:state.balances.length,accounts:health.accounts}))}catch(e){log('[operations] '+JSON.stringify({status:'unavailable',code:e.message}))}}),getState,authenticate,mutate,health:()=>health};
 }
 module.exports={catalogFromSeed,profiles,permitted,canBalance,canTarget,normalizeBalance,normalizeTargets,decodeRows,applyEvent,createStore};
