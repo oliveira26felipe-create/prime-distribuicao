@@ -30,8 +30,8 @@ function parsePosition(values,catalog){
 function makeStockSync(catalog){
   const id=process.env.PRIME_SHEETS_STOCK_ID;let current=null,inflight=null,checkedAt=0;let health={'5':{status:'pending'},'8':{status:'pending'}};
   function mark(k,status,extra={}){health[k]={...health[k],status,checkedAt:new Date().toISOString(),...extra,...(status==='ok'?{lastSuccess:new Date().toISOString(),error:null}:{})}}
-  async function refresh(){
-    if(!id)return current;if(inflight)return inflight;if(Date.now()-checkedAt<300000)return current;
+  async function refresh(force=false){
+    if(!id)return current;if(inflight)return inflight;if(force!==true&&Date.now()-checkedAt<300000)return current;
     checkedAt=Date.now();
     inflight=(async()=>{
       try{
