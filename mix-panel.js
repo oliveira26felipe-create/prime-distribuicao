@@ -18,7 +18,7 @@ window.primeMixPanel=function(a,picker,search,table,tr){
  h+='<div class="bar"><label>Mês de referência <input type="month" value="'+esc(salesMonth)+'" onchange="setDashboardMonth(this.value)"></label></div>';
  if(!i?.live||!i.soldByStore||!i.month)return h+'<p class="warn">Dados de mix por produto ainda indisponíveis. Nenhum item será classificado como oportunidade sem uma leitura válida.</p></section>';
  const [year,month]=i.month.split('-');
- h+='<p><b>Período: '+esc(month+'/'+year)+'</b> • Flash de Vendas / Dados'+(i.mixStatus==='stale'?' • Última leitura válida; sincronização indisponível.':'')+'</p><div class="bar">'+picker+search+'</div>';
+ h+='<p><b>Período: '+esc(month+'/'+year)+'</b> • '+esc(i.source||'Fonte comercial')+''+(i.mixStatus==='stale'?' • Última leitura válida; sincronização indisponível.':'')+'</p><div class="bar">'+picker+search+'</div>';
  const l=a.find(x=>x.id===store);
  if(!l){
    h+='<p>Selecione a loja para consultar os produtos. Os totais consideram o catálogo atual.</p>';
