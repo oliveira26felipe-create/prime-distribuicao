@@ -115,4 +115,25 @@ try{await Promise.race([Promise.allSettled([sheetsSync.refresh(),stockSync.refre
 if(path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:liveVersion(),stock:stockSync.get(),health:syncHealth()}))}
 return send(res,200,withPwa(finalMode?presentationHtml(liveHtml()):liveHtml()));
 });
-require('./self-tests.cjs').run().then(checks=>{console.log('[self-test] '+JSON.stringify({status:'ok',checks}));server.listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start();stockSync.start()})}).catch(e=>{console.error('[self-test] failed: '+e.message);process.exitCode=1});
+
+async function probeCandidateSources(){
+ const entries=[['farol',process.env.PRIME_CANDIDATE_FAROL_ID,'8095','8095 - FAROL'],['metas',process.env.PRIME_CANDIDATE_META_ID,'METAS','METAS - FLASH']];
+ for(const [kind,id,tab,title] of entries){
+  if(!id)continue;
+  try{
+   if(!/^[A-Za-z0-9_-]{20,120}$/.test(id))throw Error('INVALID_CANDIDATE_ID');
+   const token=await require('./sheets-reader.cjs').accessToken();
+   const base='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(id);
+   const get=async suffix=>{const r=await fetch(base+suffix,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(25000),redirect:'error'});if(!r.ok)throw Error('CANDIDATE_HTTP_'+r.status);return r.json()};
+   const info=await get('?fields=properties(title),sheets(properties(title,gridProperties(rowCount,columnCount)))');
+   if(info.properties?.title?.trim().toUpperCase()!==title)throw Error('CANDIDATE_TITLE_MISMATCH');
+   const sheet=info.sheets?.find(x=>x.properties?.title===tab)?.properties;
+   if(!sheet)throw Error('CANDIDATE_TAB_MISSING');
+   const rows=(await get('/values/'+encodeURIComponent("'"+tab+"'!1:"+(kind==='farol'?1:3))+'?valueRenderOption=UNFORMATTED_VALUE')).values||[];
+   const headers=rows.map(row=>row.map((v,i)=>typeof v==='string'&&v.trim()?[i+1,v.trim().slice(0,90)]:typeof v==='number'?[i+1,'[numeric]']:null).filter(Boolean).slice(0,180));
+   console.log('[candidate-source] '+JSON.stringify({kind,status:'ok',tab,columns:sheet.gridProperties?.columnCount,headers}));
+  }catch(e){console.log('[candidate-source] '+JSON.stringify({kind,status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CANDIDATE_READ_FAILED'}))}
+ }
+}
+
+require('./self-tests.cjs').run().then(checks=>{console.log('[self-test] '+JSON.stringify({status:'ok',checks}));server.listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start();stockSync.start();probeCandidateSources().catch(()=>{})})}).catch(e=>{console.error('[self-test] failed: '+e.message);process.exitCode=1});
