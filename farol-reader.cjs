@@ -50,12 +50,14 @@ async function readMetaFlash(get,id,month,calendarMonth,confirmedMetaMonth){
  if(norm(meta.properties?.title)!=='METAS - FLASH')throw Error('META_FLASH_TITLE_MISMATCH');
  const marker=(meta.sheets||[]).filter(s=>norm(s.properties?.title)==='COMPETENCIA');
  if(marker.length>1)throw Error('META_FLASH_PERIOD_UNCONFIRMED');
+ const readMarker=async()=> (await get(id,'/values/'+encodeURIComponent("'"+marker[0].properties.title.replace(/'/g,"''")+"'!A1")+'?valueRenderOption=UNFORMATTED_VALUE')).values?.[0]?.[0];
  if(marker.length===1){
-  const a=(await get(id,'/values/'+encodeURIComponent("'"+marker[0].properties.title.replace(/'/g,"''")+"'!A1")+'?valueRenderOption=UNFORMATTED_VALUE')).values?.[0]?.[0];
+  const a=await readMarker();
   const period=typeof a==='number'?dateMonth(a):String(a??'').trim();
   if(period!==month)throw Error('META_FLASH_PERIOD_UNCONFIRMED');
  }else if(confirmedMetaMonth!==month)throw Error('META_FLASH_PERIOD_UNCONFIRMED');
  const values=(await get(id,'/values/'+encodeURIComponent("'METAS'!A1:AY")+'?valueRenderOption=UNFORMATTED_VALUE')).values||[];
+ if(marker.length===1){const b=await readMarker();if((typeof b==='number'?dateMonth(b):String(b??'').trim())!==month)throw Error('META_FLASH_PERIOD_UNCONFIRMED')}
  return readMetaRows(values);
 }
 module.exports={dateMonth,normalizeFarolRows,readFarol,readMetaRows,readMetaFlash};
