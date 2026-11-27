@@ -8,8 +8,15 @@ function parsePosition(values,catalog){
   const stamp=h[1];
   let position;
   if(typeof stamp==='number'&&stamp>40000&&stamp<80000)position=new Date(Date.UTC(1899,11,30)+Math.round(stamp*86400000)).toISOString().slice(0,19);
-  else if(typeof stamp==='string'&&/^\d{1,2}\/\d{1,2}\/\d{4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/.test(stamp.trim())){const [d,m,y,...time]=stamp.trim().split(/[\/\s]/);position=y+'-'+m.padStart(2,'0')+'-'+d.padStart(2,'0')+(time.length?'T'+time[0].padStart(8,'0').replace(/^0(\d{2}:)/,'$1'):'');}
-  else throw Error('INVALID_STOCK_DATE');
+  else if(typeof stamp==='string'){
+    const match=stamp.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if(!match)throw Error('INVALID_STOCK_DATE');
+    const [,d,m,y,h='0',min='00',sec='00']=match;
+    position=y+'-'+m.padStart(2,'0')+'-'+d.padStart(2,'0')+'T'+h.padStart(2,'0')+':'+min+':'+sec;
+    const utc=Date.parse(position+'Z');if(!Number.isFinite(utc)||new Date(utc).toISOString().slice(0,19)!==position)throw Error('INVALID_STOCK_DATE');
+  }else throw Error('INVALID_STOCK_DATE');
+  const reportAt=Date.parse(position+'-03:00');
+  if(!Number.isFinite(reportAt)||reportAt>Date.now()+600000)throw Error('INVALID_STOCK_DATE');
   // The report's merged header is offset from the detail lines: B code, C description, D unit, E units, H master boxes.
   const found=new Map();let total=null,mismatch=0,precision=[];
   for(const r of values){
@@ -40,7 +47,7 @@ function makeStockSync(catalog){
         const get=async suffix=>{const r=await fetch(base+suffix,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(45000),redirect:'error'});if(!r.ok)throw Error('STOCK_HTTP_'+r.status);return r.json()};
         const info=await get('?fields=properties(title),sheets(properties(title,gridProperties(rowCount,columnCount)))');
         const tabs=info.sheets.map(t=>t.properties);
-        const next={...(current?.branches||{})};
+        const previous=current?.branches||{},next={...previous};
         for(const branch of ['5','8']){
           try{
             const tab=tabs.filter(t=>new RegExp('^estoque\\s*0?'+branch+'$').test(norm(t.title)));
@@ -55,6 +62,10 @@ function makeStockSync(catalog){
             next[branch]={...result,status:'ok',syncedAt:prev&&JSON.stringify([prev.position,prev.items])===JSON.stringify([result.position,result.items])?prev.syncedAt:new Date().toISOString()};
             console.log('[stock-sync] '+JSON.stringify({status:'ok',branch,tab:tab[0].title,position:result.position,reported:result.reported,matched:result.matched,mismatch:result.mismatch,precision:result.precision}));
           }catch(e){next[branch]={...(next[branch]||{items:{}}),status:next[branch]?.position?'stale':'unavailable'};mark(branch,next[branch].status,{error:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'});console.log('[stock-sync] '+JSON.stringify({status:next[branch].status,branch,code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
+        }
+        if(next['5']?.status==='ok'&&next['8']?.status==='ok'&&JSON.stringify(next['5'].items)===JSON.stringify(next['8'].items)){
+          for(const k of ['5','8']){next[k]={...(previous[k]||{items:{}}),status:previous[k]?.position?'stale':'unavailable'};health[k]={...health[k],status:next[k].status,error:'IDENTICAL_BRANCH_REPORTS',lastSuccess:previous[k]?.syncedAt||null};}
+          console.log('[stock-sync] '+JSON.stringify({status:'error',code:'IDENTICAL_BRANCH_REPORTS'}));
         }
         current={branches:next};
       }catch(e){for(const k of ['5','8'])mark(k,health[k].lastSuccess?'stale':'unavailable',{error:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'});if(current)current={branches:Object.fromEntries(Object.entries(current.branches).map(([b,v])=>[b,{...v,status:v.position?'stale':'unavailable'}]))};console.log('[stock-sync] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
