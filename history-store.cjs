@@ -45,7 +45,7 @@ function makeHistory({id,storeIds,excludedIds,token,fetchFn=fetch,log=console.lo
   const getRequest=async()=>{if(!/^[A-Za-z0-9_-]{20,120}$/.test(id)||excludedIds.has(id))throw Error('INVALID_HISTORY_DESTINATION');const bearer=await token(),base='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(id);return async(suffix,method='GET',body)=>{const r=await fetchFn(base+suffix,{method,headers:{Authorization:'Bearer '+bearer,...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(25000),redirect:'error'});if(!r.ok)throw Error('HISTORY_HTTP_'+r.status);return r.json()}};
   const range=encodeURIComponent("'Comercial'!A1:D");
   async function load(force=false){
-    if(!configured)return loaded;if(flight)return flight;if(ready&&!force)return loaded;if(!force&&Date.now()-checkedAt<60000)return loaded;
+    if(!configured)return loaded;if(flight)return flight;if(ready&&!force&&Date.now()-checkedAt<300000)return loaded;if(!force&&Date.now()-checkedAt<60000)return loaded;
     checkedAt=Date.now();
     flight=(async()=>{try{
       const req=await getRequest(),meta=await req('?fields=properties(title),sheets(properties(title))');
