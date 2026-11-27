@@ -81,6 +81,7 @@ function makeSync(baseline,config={}){
   const gid=config.goalsId??process.env.PRIME_SHEETS_GOALS_ID;
   const month=baseline.month,expected=monthNames[Number(month.slice(5))-1];
   const minStores=config.minStores??30;
+  const fetchFn=config.fetchFn||fetch,getToken=config.getToken||accessToken,log=config.log||console.log;
   let current={...baseline},inflight=null,checkedAt=0;
   let health={sales:{status:'pending'},official:{status:'pending'},individual:{status:'pending'}};
   function mark(k,status,extra={}){const at=new Date().toISOString();health[k]={...health[k],status,checkedAt:at,...extra,...(status==='ok'?{lastSuccess:at,error:null}:{})}}
@@ -91,8 +92,8 @@ function makeSync(baseline,config={}){
     checkedAt=Date.now();
     inflight=(async()=>{
       try{
-        const token=await accessToken();
-        const get=async(sheet,suffix)=>{if(!validId(sheet))throw Error('INVALID_SHEETS_CONFIG');const r=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(sheet)+suffix,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(25000),redirect:'error'});if(!r.ok){if(r.status===401)tokenCache=null;throw Error('SHEETS_HTTP_'+r.status)}return r.json()};
+        const token=await getToken();
+        const get=async(sheet,suffix)=>{if(!validId(sheet))throw Error('INVALID_SHEETS_CONFIG');const r=await fetchFn('https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(sheet)+suffix,{headers:{Authorization:'Bearer '+token},signal:AbortSignal.timeout(25000),redirect:'error'});if(!r.ok){if(r.status===401)tokenCache=null;throw Error('SHEETS_HTTP_'+r.status)}return r.json()};
         const checkTitle=async(sheet,requireYear)=>{const data=await get(sheet,'?fields=properties(title)');const title=String(data.properties?.title||'').toLowerCase();const years=title.match(/\b20\d{2}\b/g)||[];if(!title.includes(expected)||(years.length&&!years.includes(month.slice(0,4)))||(requireYear&&!years.includes(month.slice(0,4))))throw Error('SOURCE_MONTH_MISMATCH')};
         const values=(sheet,range)=>get(sheet,'/values/'+encodeURIComponent(range)+'?valueRenderOption=UNFORMATTED_VALUE');
         // Both Flash reads share a period check; the individual goal source is independent.
@@ -110,23 +111,23 @@ function makeSync(baseline,config={}){
           const changed=JSON.stringify([next.rows.map(([id,m,a])=>[id,a]),r.soldByStore,r.matchedIds,r.lines])!==JSON.stringify([current.rows.map(([id,m,a])=>[id,a]),current.soldByStore,current.matchedIds,current.lineCount]);
           if(changed||!current.syncedAt)next.syncedAt=new Date().toISOString();
           mark('sales','ok',{month,lines:r.lines,stores:r.stores,totalCents:r.rows.reduce((n,x)=>n+x[2],0),missingStores:baseline.rows.length-r.stores});
-          console.log('[mix-sync] '+JSON.stringify({status:'ok',month,stores:baseline.rows.length,positiveStores:Object.values(r.soldByStore).filter(x=>x.length).length,distinctCodes:new Set(Object.values(r.soldByStore).flat()).size}));
-          console.log('[sheets-sync] '+JSON.stringify({status:'ok',month,stores:r.stores,lines:r.lines,totalCents:health.sales.totalCents,changed}));
-        }else{next.mixStatus=failure('sales',sales.reason);console.log('[sheets-sync] '+JSON.stringify({month,status:next.mixStatus,code:errorCode(sales.reason)}))}
+          log('[mix-sync] '+JSON.stringify({status:'ok',month,stores:baseline.rows.length,positiveStores:Object.values(r.soldByStore).filter(x=>x.length).length,distinctCodes:new Set(Object.values(r.soldByStore).flat()).size}));
+          log('[sheets-sync] '+JSON.stringify({status:'ok',month,stores:r.stores,lines:r.lines,totalCents:health.sales.totalCents,changed}));
+        }else{next.mixStatus=failure('sales',sales.reason);log('[sheets-sync] '+JSON.stringify({month,status:next.mixStatus,code:errorCode(sales.reason)}))}
         if(official.status==='fulfilled'){
           if(next.officialGoal!==official.value||!next.goalSyncedAt)next.goalSyncedAt=new Date().toISOString();next.officialGoal=official.value;next.goalStatus='ok';mark('official','ok',{totalCents:official.value});
-          console.log('[goals-sync] '+JSON.stringify({status:'ok',month,officialGoalCents:official.value}));
-        }else{next.goalStatus=failure('official',official.reason);console.log('[goals-sync] '+JSON.stringify({month,status:next.goalStatus,code:errorCode(official.reason)}))}
+          log('[goals-sync] '+JSON.stringify({status:'ok',month,officialGoalCents:official.value}));
+        }else{next.goalStatus=failure('official',official.reason);log('[goals-sync] '+JSON.stringify({month,status:next.goalStatus,code:errorCode(official.reason)}))}
         if(individual.status==='fulfilled'){
           const goals=individual.value,changed=next.rows.some(([id,m])=>goals.get(id)!==m);
           next.rows=next.rows.map(([id,m,a])=>[id,goals.get(id),a]);if(changed||!next.storeGoalSyncedAt)next.storeGoalSyncedAt=new Date().toISOString();next.storeGoalStatus='ok';
           const totalCents=next.rows.reduce((n,x)=>n+x[1],0);mark('individual','ok',{stores:goals.size,totalCents});
-          console.log('[individual-sync] '+JSON.stringify({status:'ok',month,stores:goals.size,totalCents,differenceCents:Number.isSafeInteger(next.officialGoal)?totalCents-next.officialGoal:null}));
-        }else{next.storeGoalStatus=failure('individual',individual.reason);console.log('[individual-sync] '+JSON.stringify({month,status:next.storeGoalStatus,code:errorCode(individual.reason)}))}
+          log('[individual-sync] '+JSON.stringify({status:'ok',month,stores:goals.size,totalCents,differenceCents:Number.isSafeInteger(next.officialGoal)?totalCents-next.officialGoal:null}));
+        }else{next.storeGoalStatus=failure('individual',individual.reason);log('[individual-sync] '+JSON.stringify({month,status:next.storeGoalStatus,code:errorCode(individual.reason)}))}
         current=next;
       }catch(e){
         current={...current,mixStatus:failure('sales',e),goalStatus:failure('official',e),storeGoalStatus:failure('individual',e)};
-        console.log('[sheets-sync] '+JSON.stringify({month,status:'error',code:errorCode(e)}));
+        log('[sheets-sync] '+JSON.stringify({month,status:'error',code:errorCode(e)}));
       }finally{inflight=null}
       return current;
     })();
