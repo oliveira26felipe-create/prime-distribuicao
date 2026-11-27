@@ -70,10 +70,10 @@ function makeSync(baseline){
   let current=baseline,inflight=null,checkedAt=0;
   let health={sales:{status:'pending'},official:{status:'pending'},individual:{status:'pending'}};
   function mark(k,status,extra={}){health[k]={...health[k],status,checkedAt:new Date().toISOString(),...extra,...(status==='ok'?{lastSuccess:new Date().toISOString(),error:null}:{})}}
-  const refresh=async()=>{
+  const refresh=async(force=false)=>{
     if(!id||!baseline)return current;
     if(inflight)return inflight;
-    if(Date.now()-checkedAt<300000)return current;
+    if(force!==true&&Date.now()-checkedAt<300000)return current;
     checkedAt=Date.now();
     inflight=(async()=>{
       try{
