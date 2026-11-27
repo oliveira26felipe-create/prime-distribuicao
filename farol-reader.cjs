@@ -44,10 +44,17 @@ function readMetaRows(values){
  if(!Number.isSafeInteger(cents)||cents<=0)throw Error('INVALID_OFFICIAL_GOAL');
  return cents;
 }
-async function readMetaFlash(get,id,month,calendarMonth){
+async function readMetaFlash(get,id,month,calendarMonth,confirmedMetaMonth){
  if(month!==calendarMonth)throw Error('META_FLASH_PERIOD_UNCONFIRMED');
- const meta=await get(id,'?fields=properties(title)');
+ const meta=await get(id,'?fields=properties(title),sheets(properties(title))');
  if(norm(meta.properties?.title)!=='METAS - FLASH')throw Error('META_FLASH_TITLE_MISMATCH');
+ const marker=(meta.sheets||[]).filter(s=>norm(s.properties?.title)==='COMPETENCIA');
+ if(marker.length>1)throw Error('META_FLASH_PERIOD_UNCONFIRMED');
+ if(marker.length===1){
+  const a=(await get(id,'/values/'+encodeURIComponent("'"+marker[0].properties.title.replace(/'/g,"''")+"'!A1")+'?valueRenderOption=UNFORMATTED_VALUE')).values?.[0]?.[0];
+  const period=typeof a==='number'?dateMonth(a):String(a??'').trim();
+  if(period!==month)throw Error('META_FLASH_PERIOD_UNCONFIRMED');
+ }else if(confirmedMetaMonth!==month)throw Error('META_FLASH_PERIOD_UNCONFIRMED');
  const values=(await get(id,'/values/'+encodeURIComponent("'METAS'!A1:AY")+'?valueRenderOption=UNFORMATTED_VALUE')).values||[];
  return readMetaRows(values);
 }
