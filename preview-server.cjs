@@ -29,11 +29,19 @@ const sheetsSync=require('./sheets-reader.cjs').makeMonthSync(commercialImport);
 const stockJs=fs.readFileSync(pathUtil.join(__dirname,'stock-panel.js'),'utf8');
 const mixJs=fs.readFileSync(pathUtil.join(__dirname,'mix-panel.js'),'utf8');
 const integrationJs=fs.readFileSync(pathUtil.join(__dirname,'integration-panel.js'),'utf8');
-const syncHealth=()=>({sales:sheetsSync.health(),stock:stockSync.health()});
+const syncHealth=()=>({sales:sheetsSync.health(),stock:stockSync.health(),operations:operations.health(),supply:supplySync.get().status});
 let lastManualSync=0;
 const stockCatalogBlock=html.match(/"produtos"\s*:\s*(\[[\s\S]*?\])\s*,\s*"visitas"/);
 const stockCatalog=new Map(stockCatalogBlock?JSON.parse(stockCatalogBlock[1]).map(p=>[String(p.id),Number(p.unc)]):[]);
 const stockSync=require('./stock-reader.cjs').makeStockSync(stockCatalog);
+const seedMatch=html.match(/const seed=(\{[\s\S]*?\});let db=/);
+if(!seedMatch)throw Error('OPERATIONAL_CATALOG_MISSING');
+const operationalSeed=JSON.parse(seedMatch[1]);
+const operationalCatalog=require('./operations-store.cjs').catalogFromSeed(operationalSeed);
+const sourceIds=new Set([process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID,process.env.PRIME_SHEETS_STOCK_ID,process.env.PRIME_CANDIDATE_FAROL_ID,process.env.PRIME_CANDIDATE_META_ID].filter(Boolean));
+let sourceRegistryValid=true;
+try{const v=JSON.parse(process.env.PRIME_MONTH_SOURCES_JSON||'[]');if(!Array.isArray(v))throw Error('BAD_REGISTRY');for(const x of v){sourceIds.add(x.salesId);sourceIds.add(x.goalsId)}}catch{sourceRegistryValid=false}
+const supplySync=require('./supply-reader.cjs').makeSupplySync({catalog:operationalCatalog,excludedIds:new Set([...sourceIds,process.env.PRIME_HISTORY_ID])});
 
 const commercialPayload=JSON.stringify(commercialImport).replace(/</g,'\\u003c');
 const commercialTag='<script>window.PRIME_COMMERCIAL_IMPORT='+commercialPayload+';</script><script src="/commercial-summary.js"></script>';
@@ -60,6 +68,7 @@ const key=crypto.scryptSync(password,'prime-preview-session-v1',32);
 const sign=v=>crypto.createHmac('sha256',key).update(v).digest('hex');
 const safe=(a,b)=>typeof a==='string'&&typeof b==='string'&&crypto.timingSafeEqual(hash(a),hash(b));
 const attempts=new Map();
+const operations=require('./operations-http.cjs').makeOperations({seed:operationalSeed,adminName:adminUsername,verifyAdmin:v=>crypto.timingSafeEqual(hash(v),expected),sign,safe,archiveId:sourceRegistryValid?process.env.PRIME_HISTORY_ID:null,excludedIds:new Set([...sourceIds,process.env.PRIME_SHEETS_ORDERS_ID,process.env.PRIME_SHEETS_PRICES_ID]),token:require('./sheets-reader.cjs').accessWriteToken,getCommercial:()=>sheetsSync.get(),getStock:()=>stockSync.get(),getSupply:()=>supplySync.get()});
 const page=(error='')=>`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Prime Distribuição | Entrar</title><style>*{box-sizing:border-box}body{margin:0;background:#0d1522;color:#e8edf5;min-height:100vh;display:grid;place-items:center;padding:20px;font:16px Arial,sans-serif}main{width:100%;max-width:410px;background:#172438;padding:30px;border:1px solid #34455d;border-radius:18px}h1{margin:0 0 4px;font-size:30px;font-style:italic}small{color:#ff7175;letter-spacing:3px}p{line-height:1.5;color:#c4cede}label{display:block;margin:16px 0 6px}input,button{display:block;width:100%;padding:14px;border-radius:9px;font:inherit}input{color:#fff;background:#101a2a;border:1px solid #64748b}button{margin-top:20px;border:none;background:#d92c35;color:#fff;font-weight:bold}aside{color:#ffb5b5;margin:10px 0}</style></head><body><main>${logo?'<img alt="Prime Distribuição" src="'+logo[0]+'" style="display:block;width:190px;max-width:100%;padding:8px;background:#fff;border-radius:9px;margin:0 auto 20px">':'<h1>PRIME</h1><small>DISTRIBUIÇÃO</small>'}<p>Acesso administrativo</p>${error?'<aside>'+error+'</aside>':''}<form method="post" action="/entrar"><label for="user">Usuário</label><input id="user" name="user" value="${adminUsername}" autocomplete="username" required><label for="password">Senha</label><input id="password" name="password" type="password" autocomplete="current-password" required><button>Entrar na plataforma</button><p style="font-size:13px">Sessão mantida por 30 dias neste navegador. Encerre a sessão em dispositivos compartilhados.</p></form><p>Ambiente de demonstração. Os registros não são sincronizados.</p></main></body></html>`;
 const send=(res,status,body)=>{res.writeHead(status,{'Content-Type':'text/html; charset=utf-8'});res.end(body)};
 const server=http.createServer(async(req,res)=>{
@@ -70,6 +79,7 @@ res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
 res.setHeader('X-Frame-Options','DENY');
 res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline'; img-src data: blob: 'self'; font-src data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
 const path=req.url.split('?')[0];
+if(path==='/operacional'||path.startsWith('/operacional/'))return operations.handle(req,res,path);
 const finalMode=path==='/final'||new URL(req.url,'http://localhost').searchParams.get('modo')==='final';
 const loginPage=finalMode?presentationLogin:page;
 if((req.method==='GET'||req.method==='HEAD')&&Object.hasOwn(publicAssets,path)){const [type,data]=publicAssets[path];res.writeHead(200,{'Content-Type':type});return res.end(req.method==='HEAD'?undefined:data)}
@@ -105,7 +115,7 @@ if(path==='/sincronizar'){
   if(Date.now()-lastManualSync<60000){res.writeHead(429);return res.end()}
   lastManualSync=Date.now();
   req.resume();
-  await Promise.allSettled([sheetsSync.refresh(true),stockSync.refresh(true)]);
+  await Promise.allSettled([sheetsSync.refresh(true),stockSync.refresh(true),supplySync.refresh(true)]);
   res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:liveVersion(),stock:stockSync.get(),health:syncHealth()}));
 }
 // A consulta de versão e a abertura autenticada também verificam fontes vencidas.
@@ -113,7 +123,8 @@ if(path==='/sincronizar'){
 let timeout;
 try{await Promise.race([Promise.allSettled([sheetsSync.refresh(),stockSync.refresh()]),new Promise(resolve=>{timeout=setTimeout(resolve,7000);timeout.unref?.()})])}finally{clearTimeout(timeout)}
 if(path==='/versao'){res.writeHead(200,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({version:liveVersion(),stock:stockSync.get(),health:syncHealth()}))}
-return send(res,200,withPwa(finalMode?presentationHtml(liveHtml()):liveHtml()));
+const operationalLink='<div style="padding:8px 14px;background:#21354e;text-align:center"><a style="color:#d3e6ff" href="/operacional">Ambiente operacional • contas individuais e balanços reais</a></div>';
+return send(res,200,withPwa((finalMode?presentationHtml(liveHtml()):liveHtml()).replace('<header>',operationalLink+'<header>')));
 });
 
-require('./self-tests.cjs').run().then(checks=>{console.log('[self-test] '+JSON.stringify({status:'ok',checks}));server.listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start();stockSync.start()})}).catch(e=>{console.error('[self-test] failed: '+e.message);process.exitCode=1});
+require('./self-tests.cjs').run().then(checks=>{console.log('[self-test] '+JSON.stringify({status:'ok',checks}));server.listen(Number(process.env.PORT)||10000,'0.0.0.0',()=>{console.log('Protected preview ready.');sheetsSync.start();stockSync.start();supplySync.start();operations.init().catch(()=>{})})}).catch(e=>{console.error('[self-test] failed: '+e.message);process.exitCode=1});
