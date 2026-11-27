@@ -32,7 +32,7 @@ async function run({seed,archiveId,excludedIds,token,renderApp}){
   const key=crypto.randomBytes(32),sign=v=>crypto.createHmac('sha256',key).update(v).digest('hex'),safe=(a,b)=>typeof a==='string'&&typeof b==='string'&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b));
   const opts={seed,adminName:'test-admin',verifyAdmin:v=>safe(v,adminPass),sign,safe,archiveId,excludedIds,token,fetchFn:adapter,getCommercial:()=>({month:'2026-11',months:{'2026-11':{month:'2026-11',rows:seed.lojas.map(l=>[l.id,null,null]),live:false}}}),getStock:()=>({branches:{}}),getSupply:()=>null,renderApp,release:'isolated-test'};
   let app=makeOperations(opts);await app.init();check(app.health().status==='ok','armazenamento real conectado');
-  server=http.createServer((req,res)=>{app.handle(req,res,req.url).catch(()=>{res.statusCode=500;res.end()})});
+  server=http.createServer((req,res)=>{app.handle(req,res,req.url.split('?')[0]).catch(()=>{res.statusCode=500;res.end()})});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve)});
   const url='http://127.0.0.1:'+server.address().port;
   const session=(ua)=>{const jar=new Map();return async(path,method='GET',body=null,headers={})=>{
