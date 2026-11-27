@@ -28,7 +28,8 @@ function parsePosition(values,catalog){
   return {position,items,reported:found.size,matched:Object.keys(items).length,mismatch,precision};
 }
 function makeStockSync(catalog){
-  const id=process.env.PRIME_SHEETS_STOCK_ID;let current=null,inflight=null,checkedAt=0;
+  const id=process.env.PRIME_SHEETS_STOCK_ID;let current=null,inflight=null,checkedAt=0;let health={'5':{status:'pending'},'8':{status:'pending'}};
+  function mark(k,status,extra={}){health[k]={...health[k],status,checkedAt:new Date().toISOString(),...extra,...(status==='ok'?{lastSuccess:new Date().toISOString(),error:null}:{})}}
   async function refresh(){
     if(!id)return current;if(inflight)return inflight;if(Date.now()-checkedAt<300000)return current;
     checkedAt=Date.now();
@@ -49,16 +50,18 @@ function makeStockSync(catalog){
             const result=parsePosition(data.values||[],catalog);
             if(next[branch]?.position&&result.position<next[branch].position)throw Error('OLDER_STOCK_POSITION');
             const prev=next[branch];
+            if(result.matched<Math.ceil(catalog.size*0.5)||prev?.matched&&result.matched<Math.ceil(prev.matched*0.8))throw Error('STOCK_COVERAGE_TOO_LOW');
+            mark(branch,'ok',{position:result.position,reported:result.reported,matched:result.matched,mismatch:result.mismatch});
             next[branch]={...result,status:'ok',syncedAt:prev&&JSON.stringify([prev.position,prev.items])===JSON.stringify([result.position,result.items])?prev.syncedAt:new Date().toISOString()};
             console.log('[stock-sync] '+JSON.stringify({status:'ok',branch,tab:tab[0].title,position:result.position,reported:result.reported,matched:result.matched,mismatch:result.mismatch,precision:result.precision}));
-          }catch(e){next[branch]={...(next[branch]||{items:{}}),status:next[branch]?.position?'stale':'unavailable'};console.log('[stock-sync] '+JSON.stringify({status:next[branch].status,branch,code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
+          }catch(e){next[branch]={...(next[branch]||{items:{}}),status:next[branch]?.position?'stale':'unavailable'};mark(branch,next[branch].status,{error:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'});console.log('[stock-sync] '+JSON.stringify({status:next[branch].status,branch,code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
         }
         current={branches:next};
-      }catch(e){if(current)current={branches:Object.fromEntries(Object.entries(current.branches).map(([b,v])=>[b,{...v,status:v.position?'stale':'unavailable'}]))};console.log('[stock-sync] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
+      }catch(e){for(const k of ['5','8'])mark(k,health[k].lastSuccess?'stale':'unavailable',{error:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'});if(current)current={branches:Object.fromEntries(Object.entries(current.branches).map(([b,v])=>[b,{...v,status:v.position?'stale':'unavailable'}]))};console.log('[stock-sync] '+JSON.stringify({status:'error',code:/^[A-Z_0-9]+$/.test(e.message)?e.message:'CHECK_FAILED'}))}
       finally{inflight=null}
       return current;
     })();return inflight;
   }
-  return {get:()=>current,refresh,start(){if(!id)return;refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
+  return {get:()=>current,health:()=>health,refresh,start(){if(!id)return;refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
 module.exports={makeStockSync,parsePosition};
