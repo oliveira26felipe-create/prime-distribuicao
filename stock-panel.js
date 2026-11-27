@@ -2,7 +2,8 @@
 'use strict';
 const fmt=n=>Number(n).toLocaleString('pt-BR',{maximumFractionDigits:2});
 const branchFor=l=>window.PRIME_STOCK_IMPORT?.branches?.[String(Number(l.filial))]||null;
-const position=(b)=>b?.position?b.position.slice(0,10).split('-').reverse().join('/')+' '+b.position.slice(11,16)+(b.status==='stale'?' • Última leitura válida; atualização indisponível.':''):'Posição ainda indisponível';
+const isOld=b=>{const p=b?.position;if(!p)return true;const t=Date.parse((p.includes('T')?p:p+'T00:00:00')+'-03:00');return !Number.isFinite(t)||Date.now()-t>86400000};
+const position=(b)=>b?.position?b.position.slice(0,10).split('-').reverse().join('/')+' '+b.position.slice(11,16)+(b.status==='stale'?' • Última leitura válida; atualização indisponível.':'')+(isOld(b)?' • ATENÇÃO: posição com mais de 24h.':''):'Posição ainda indisponível';
 function stockContent(b,id){
  const v=b?.items?.[id];if(!v)return '—<br><small>Sem informação</small>';
  if(!v.compatible)return esc(fmt(v.units))+' un.<br><small>Conferir embalagem</small>';
