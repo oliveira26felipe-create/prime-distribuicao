@@ -2,6 +2,8 @@
 'use strict';
 let expiryDraft=Object.create(null),draftRef=null,expiryStore='',expiryFilter='all';
 const sync=()=>{if(draftRef!==draft){expiryDraft=Object.create(null);draftRef=draft;}};
+window.primeExpiryDraftGet=()=>{sync();return JSON.parse(JSON.stringify(expiryDraft))};
+window.primeExpiryDraftSet=v=>{expiryDraft=Object.assign(Object.create(null),v||{});draftRef=draft;};
 const today=()=>new Date().toLocaleDateString('sv-SE',{timeZone:'America/Bahia'});
 const days=date=>Math.round((Date.parse(date+'T00:00:00Z')-Date.parse(today()+'T00:00:00Z'))/86400000);
 const state=date=>{const d=days(date);return d<0?['expired','Vencido']:d<=30?['urgent','Vence em '+d+' dia(s)']:d<=60?['attention','Vence em '+d+' dia(s)']:['ok','Acima de 60 dias'];};
