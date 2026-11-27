@@ -135,6 +135,13 @@ function makeSync(baseline,config={}){
   };
   return {get:()=>current,health:()=>health,restore(snapshot){if(!current.live&&snapshot?.month===month){current={...snapshot,live:true,archived:true,mixStatus:'stale',goalStatus:'stale',storeGoalStatus:'stale',source:'Histórico permanente'};for(const k of ['sales','official','individual'])health[k]={status:'stale',lastSuccess:snapshot.capturedAt}}},refresh,start(){refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
+function parseClosures(json,calendarMonth,knownMonths){
+ const o=JSON.parse(json);
+ if(!o||typeof o!=='object'||Array.isArray(o))throw Error('INVALID_CLOSURE_REGISTRY');
+ const entries=Object.entries(o);
+ if(entries.some(([m,d])=>!validMonth(m)||m>=calendarMonth||!knownMonths.has(m)||typeof d!=='string'||!/^[0-9a-f]{64}$/.test(d)))throw Error('INVALID_CLOSURE_REGISTRY');
+ return new Map(entries);
+}
 function makeMonthSync(baseline){
   const readers=new Map([[baseline.month,makeSync(baseline)]]),ids=new Set([process.env.PRIME_SHEETS_FIRST_ID,process.env.PRIME_SHEETS_GOALS_ID].filter(Boolean));
   let registryError=null;
@@ -150,28 +157,34 @@ function makeMonthSync(baseline){
   }catch(e){registryError=errorCode(e);console.log('[month-registry] '+JSON.stringify({status:'error',code:registryError}))}
   ids.add(process.env.PRIME_SHEETS_STOCK_ID);ids.add(process.env.PRIME_SHEETS_PRICES_ID);ids.add(process.env.PRIME_SHEETS_ORDERS_ID);
   const history=require('./history-store.cjs').makeHistory({id:process.env.PRIME_HISTORY_ID,storeIds:new Set(baseline.rows.map(([id])=>String(id))),excludedIds:ids,token:accessWriteToken});
+  let closures=new Map(),closureError=null;
+  try{closures=parseClosures(process.env.PRIME_CLOSED_MONTHS_JSON||'{}',monthNow(),new Set(readers.keys()))}catch(e){closureError=errorCode(e)}
+  const isClosed=(m,saved)=>closures.has(m)&&saved?.digest===closures.get(m);
+  const closureMismatch=()=>[...closures].filter(([m,d])=>history.get().get(m)?.digest!==d).map(([m])=>m);
   let flight=null;
   const active=()=>readers.has(monthNow())?monthNow():[...readers.keys()].filter(m=>m<=monthNow()).sort().at(-1)||baseline.month;
   const months=()=>{
     const archived=history.get(),all=Object.fromEntries(archived);
     for(const [month,reader] of readers){
       const saved=archived.get(month);
-      if(saved&&month<monthNow())continue;
+      if(isClosed(month,saved)){all[month]={...saved,closed:true};continue;}
+      if(closures.has(month)){if(saved)all[month]={...saved,closed:false,closureUnconfirmed:true};continue;}
       all[month]=reader.get();
     }
     return all;
   };
   const get=()=>{const all=months();return {...(all[active()]||baseline),months:all}};
-  const health=()=>({...readers.get(active()).health(),month:active(),calendarMonth:monthNow(),configuredMonths:[...readers.keys()].sort(),registryError,history:history.health(),months:Object.fromEntries([...readers].map(([m,r])=>[m,r.health()]))});
+  const health=()=>({...readers.get(active()).health(),month:active(),calendarMonth:monthNow(),configuredMonths:[...readers.keys()].sort(),registryError,closureError,closureMismatch:closureMismatch(),closedMonths:[...closures.keys()].filter(m=>isClosed(m,history.get().get(m))),openMonths:[...readers.keys()].filter(m=>!closures.has(m)).sort(),history:history.health(),months:Object.fromEntries([...readers].map(([m,r])=>[m,r.health()]))});
   const refresh=async(force=false)=>{
     if(flight)return flight;
     flight=(async()=>{
       try{
         const saved=await history.load();
         for(const [m,r] of readers)if(saved.has(m))r.restore(saved.get(m));
-        const current=active();
-        await Promise.allSettled([...readers].filter(([m,r])=>!(saved.has(m)&&m<monthNow())&&(force||m===current||!r.get().live||r.get().goalStatus!=='ok'||r.get().storeGoalStatus!=='ok')).map(([,r])=>r.refresh(force)));
-        await history.save([...readers].filter(([m])=>!(saved.has(m)&&m<monthNow())).map(([,r])=>r.get()));
+        // A calendar rollover never closes an accounting period. Only a verified, pinned snapshot does.
+        const open=[...readers].filter(([m])=>!closures.has(m)&&m<=monthNow());
+        await Promise.allSettled(open.map(([,r])=>r.refresh(force)));
+        await history.save(open.map(([,r])=>r.get()));
       }finally{flight=null}
       return get();
     })();return flight;
@@ -179,4 +192,4 @@ function makeMonthSync(baseline){
   return {get,health,refresh,start(){refresh();const timer=setInterval(refresh,30000);timer.unref?.()}};
 }
 
-module.exports={makeSync,makeMonthSync,aggregate,readOfficialGoal,readStoreGoals,accessToken,accessWriteToken,validateCoverage};
+module.exports={makeSync,makeMonthSync,parseClosures,aggregate,readOfficialGoal,readStoreGoals,accessToken,accessWriteToken,validateCoverage};
